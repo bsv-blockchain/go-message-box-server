@@ -45,7 +45,7 @@ func (s *Server) AcknowledgeMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	deleted, err := s.DB.AcknowledgeMessages(identityKey, req.MessageIDs)
+	deleted, err := s.Store.AcknowledgeMessages(r.Context(), identityKey, req.MessageIDs)
 	if err != nil {
 		logger.Error("failed to acknowledge messages", "error", err)
 		writeError(w, 500, "ERR_INTERNAL_ERROR", "An internal error has occurred while acknowledging the message")

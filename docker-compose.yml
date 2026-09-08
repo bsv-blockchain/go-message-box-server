@@ -15,6 +15,18 @@ services:
       timeout: 3s
       retries: 5
 
+  mongo:
+    image: mongo:8.2
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   messagebox:
     build: .
     ports:
@@ -23,14 +35,21 @@ services:
       NODE_ENV: development
       PORT: 8080
       SERVER_PRIVATE_KEY: 4f1f715fd10bfa3549d3caf487a4be95523d7bcb8f82abe1a3c91494a09c05f5
+      STORAGE_BACKEND: sql
       DB_DRIVER: postgres
       DB_SOURCE: postgres://messagebox:messagebox@postgres:5432/messagebox?sslmode=disable
+      # To use MongoDB instead, set STORAGE_BACKEND: mongo and point these at the mongo service:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DATABASE: messagebox
       BSV_NETWORK: mainnet
       WALLET_STORAGE_URL: https://store-us-1.bsvb.tech
     depends_on:
       postgres:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   postgres-data:
+  mongo-data:

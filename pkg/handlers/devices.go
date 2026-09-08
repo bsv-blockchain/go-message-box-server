@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 // RegisterDevice godoc
@@ -44,17 +45,21 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := s.DB.RegisterDevice(identityKey, req.FCMToken, req.DeviceID, req.Platform)
-	if err != nil {
+	newDevice := storage.NewDevice{
+		IdentityKey: identityKey,
+		FCMToken:    req.FCMToken,
+		DeviceID:    req.DeviceID,
+		Platform:    req.Platform,
+	}
+	if err := s.Store.RegisterDevice(r.Context(), newDevice); err != nil {
 		logger.Error("failed to register device", "error", err)
 		writeError(w, 500, "ERR_DATABASE_ERROR", "Failed to register device.")
 		return
 	}
 
 	writeJSON(w, 200, RegisterDeviceResponse{
-		Status:   "success",
-		Message:  "Device registered successfully for push notifications",
-		DeviceID: id,
+		Status:  "success",
+		Message: "Device registered successfully for push notifications",
 	})
 }
 
@@ -75,7 +80,7 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	devices, err := s.DB.ListDevices(identityKey)
+	devices, err := s.Store.ListDevices(r.Context(), identityKey)
 	if err != nil {
 		logger.Error("failed to list devices", "error", err)
 		writeError(w, 500, "ERR_DATABASE_ERROR", "Failed to retrieve devices.")
@@ -89,21 +94,15 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 			token = "..." + token[len(token)-10:]
 		}
 		dev := DeviceOut{
-			ID:        d.ID,
 			FCMToken:  token,
 			Active:    d.Active,
 			CreatedAt: d.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
 			UpdatedAt: d.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
 		}
-		if d.DeviceID.Valid {
-			dev.DeviceID = &d.DeviceID.String
-		}
-		if d.Platform.Valid {
-			dev.Platform = &d.Platform.String
-		}
-		if d.LastUsed.Valid {
-			lu := d.LastUsed.Time.Format("2006-01-02T15:04:05.000Z")
-			dev.LastUsed = lu
+		dev.DeviceID = d.DeviceID
+		dev.Platform = d.Platform
+		if d.LastUsed != nil {
+			dev.LastUsed = d.LastUsed.Format("2006-01-02T15:04:05.000Z")
 		}
 		out = append(out, dev)
 	}

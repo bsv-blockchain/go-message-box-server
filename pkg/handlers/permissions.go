@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 // SetPermission godoc
@@ -48,7 +49,7 @@ func (s *Server) SetPermission(w http.ResponseWriter, r *http.Request) {
 
 	fee := *req.RecipientFee
 
-	if err := s.DB.SetMessagePermission(identityKey, req.Sender, req.MessageBox, fee); err != nil {
+	if err := s.Store.SetPermission(r.Context(), identityKey, req.Sender, req.MessageBox, fee); err != nil {
 		logger.Error("failed to set permission", "error", err)
 		writeError(w, 500, "ERR_DATABASE_ERROR", "Failed to update message permission.")
 		return
@@ -127,7 +128,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 		sender = &senderParam
 	}
 
-	perm, err := s.DB.GetPermission(identityKey, sender, messageBox)
+	perm, err := s.Store.GetPermission(r.Context(), identityKey, sender, messageBox)
 	if err != nil {
 		logger.Error("failed to get permission", "error", err)
 		writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
@@ -136,7 +137,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 
 	if perm != nil {
 		status := "always_allow"
-		if perm.RecipientFee == -1 {
+		if perm.RecipientFee == storage.FeeBlocked {
 			status = "blocked"
 		} else if perm.RecipientFee > 0 {
 			status = "payment_required"
@@ -149,10 +150,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 			desc = fmt.Sprintf("Box-wide permission setting found for %s.", messageBox)
 		}
 
-		var senderVal *string
-		if perm.Sender.Valid {
-			senderVal = &perm.Sender.String
-		}
+		senderVal := perm.Sender
 
 		writeJSON(w, 200, GetPermissionResponse{
 			Status:      "success",
@@ -210,7 +208,7 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
-	sortOrder := r.URL.Query().Get("createdAtOrder")
+	sortOrderParam := r.URL.Query().Get("createdAtOrder")
 
 	limit := 100
 	if limitStr != "" {
@@ -232,11 +230,13 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if sortOrder != "asc" {
-		sortOrder = "desc"
-	}
-
-	perms, total, err := s.DB.ListPermissions(identityKey, messageBox, limit, offset, sortOrder)
+	page, err := s.Store.ListPermissions(r.Context(), storage.PermissionQuery{
+		Recipient:  identityKey,
+		MessageBox: messageBox,
+		Limit:      limit,
+		Offset:     offset,
+		Order:      sortOrder(sortOrderParam),
+	})
 	if err != nil {
 		logger.Error("failed to list permissions", "error", err)
 		writeError(w, 500, "ERR_LIST_PERMISSIONS_FAILED", "Failed to list permissions")
@@ -244,13 +244,9 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var out []PermissionDetailList
-	for _, p := range perms {
-		var senderVal *string
-		if p.Sender.Valid {
-			senderVal = &p.Sender.String
-		}
+	for _, p := range page.Items {
 		out = append(out, PermissionDetailList{
-			Sender:       senderVal,
+			Sender:       p.Sender,
 			MessageBox:   p.MessageBox,
 			RecipientFee: p.RecipientFee,
 			CreatedAt:    p.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
@@ -265,7 +261,7 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ListPermissionsResponse{
 		Status:      "success",
 		Permissions: out,
-		TotalCount:  total,
+		TotalCount:  page.Total,
 	})
 }
 
@@ -320,7 +316,7 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deliveryFee, err := s.DB.GetServerDeliveryFee(messageBox)
+	deliveryFee, err := s.Store.GetServerDeliveryFee(r.Context(), messageBox)
 	if err != nil {
 		logger.Error("failed to get delivery fee", "error", err)
 		writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
@@ -329,7 +325,7 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 
 	// Single recipient: legacy response
 	if len(recipients) == 1 {
-		recipientFee, err := s.DB.GetRecipientFee(recipients[0], senderKey, messageBox)
+		recipientFee, err := s.recipientFee(r.Context(), recipients[0], senderKey, messageBox)
 		if err != nil {
 			logger.Error("failed to get recipient fee", "error", err)
 			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
@@ -352,7 +348,7 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 	totalDeliveryFees := 0
 
 	for _, rec := range recipients {
-		rf, err := s.DB.GetRecipientFee(rec, senderKey, messageBox)
+		rf, err := s.recipientFee(r.Context(), rec, senderKey, messageBox)
 		if err != nil {
 			logger.Error("failed to get recipient fee", "error", err)
 			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")

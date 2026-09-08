@@ -38,22 +38,7 @@ func (s *Server) ListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mbID, err := s.DB.GetMessageBoxID(identityKey, req.MessageBox)
-	if err != nil {
-		logger.Error("failed to get messageBox", "error", err)
-		writeError(w, 500, "ERR_INTERNAL_ERROR", "An internal error has occurred while listing messages.")
-		return
-	}
-
-	if mbID == 0 {
-		writeJSON(w, 200, ListMessagesResponse{
-			Status:   "success",
-			Messages: []MessageOut{},
-		})
-		return
-	}
-
-	msgs, err := s.DB.ListMessages(identityKey, mbID)
+	msgs, err := s.Store.ListMessages(r.Context(), identityKey, req.MessageBox)
 	if err != nil {
 		logger.Error("failed to list messages", "error", err)
 		writeError(w, 500, "ERR_INTERNAL_ERROR", "An internal error has occurred while listing messages.")

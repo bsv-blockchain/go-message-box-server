@@ -1,6 +1,7 @@
 package firebase
 
 import (
+	"context"
 	"testing"
 
 	"firebase.google.com/go/v4/messaging"
@@ -178,7 +179,7 @@ func TestSendFCMNotification_NotEnabled(t *testing.T) {
 	client = nil
 	defer func() { client = originalClient }()
 
-	result := SendFCMNotification(nil, "test-recipient", FCMPayload{
+	result := SendFCMNotification(context.Background(), nil, "test-recipient", FCMPayload{
 		Title:      "Test",
 		MessageID:  "123",
 		Originator: "sender",

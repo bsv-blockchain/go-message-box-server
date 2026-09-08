@@ -8,7 +8,7 @@ import (
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
@@ -33,14 +33,14 @@ func (e *OutputMappingError) Error() string {
 
 // Server holds shared dependencies for all handlers.
 type Server struct {
-	DB     *db.DB
+	Store  storage.Store
 	wallet sdk.Interface
 }
 
 // NewServer creates instance of Server used by all handlers.
-func NewServer(db *db.DB, wallet sdk.Interface) *Server {
+func NewServer(store storage.Store, wallet sdk.Interface) *Server {
 	return &Server{
-		DB:     db,
+		Store:  store,
 		wallet: wallet,
 	}
 }

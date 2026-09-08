@@ -1,17 +1,22 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
+
+// fcmDeliveryTimeout bounds the detached push notification send.
+const fcmDeliveryTimeout = 30 * time.Second
 
 // SendMessage godoc
 // @Summary      Send a message to recipient(s)
@@ -122,17 +127,8 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	boxType := strings.TrimSpace(msg.MessageBox)
 
-	// Ensure messageBox exists for each recipient
-	for _, recip := range recipients {
-		if _, err := s.DB.EnsureMessageBox(strings.TrimSpace(recip), boxType); err != nil {
-			logger.Error("failed to ensure messageBox", "error", err)
-			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
-			return
-		}
-	}
-
 	// Fee evaluation
-	deliveryFee, err := s.DB.GetServerDeliveryFee(boxType)
+	deliveryFee, err := s.Store.GetServerDeliveryFee(r.Context(), boxType)
 	if err != nil {
 		logger.Error("failed to get delivery fee", "error", err)
 		writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
@@ -142,7 +138,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 	var feeRows []feeRow
 	for _, recip := range recipients {
 		recip = strings.TrimSpace(recip)
-		rf, err := s.DB.GetRecipientFee(recip, senderKey, boxType)
+		rf, err := s.recipientFee(r.Context(), recip, senderKey, boxType)
 		if err != nil {
 			logger.Error("failed to get recipient fee", "error", err)
 			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
@@ -151,7 +147,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		feeRows = append(feeRows, feeRow{
 			recipient:    recip,
 			recipientFee: rf,
-			allowed:      rf != -1,
+			allowed:      rf != storage.FeeBlocked,
 		})
 	}
 
@@ -239,13 +235,6 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	var results []SendMessageResult
 	for i, fr := range feeRows {
-		mbID, err := s.DB.GetMessageBoxID(fr.recipient, boxType)
-		if err != nil {
-			logger.Error("failed to get messageBoxId", "error", err)
-			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
-			return
-		}
-
 		msgID := messageIDs[i]
 
 		// Build stored body
@@ -267,8 +256,15 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 		bodyBytes, _ := json.Marshal(storedBody)
 
-		if err := s.DB.InsertMessage(msgID, mbID, senderKey, fr.recipient, string(bodyBytes)); err != nil {
-			if errors.Is(err, db.ErrDuplicateMessage) {
+		newMsg := storage.NewMessage{
+			MessageID:  msgID,
+			Recipient:  fr.recipient,
+			MessageBox: boxType,
+			Sender:     senderKey,
+			Body:       string(bodyBytes),
+		}
+		if err := s.Store.InsertMessage(r.Context(), newMsg); err != nil {
+			if errors.Is(err, storage.ErrDuplicateMessage) {
 				logger.Error("duplicate message rejected", "messageId", msgID)
 				writeError(w, 400, "ERR_DUPLICATE_MESSAGE", "Duplicate message.")
 				return
@@ -278,11 +274,17 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if db.ShouldUseFCMDelivery(boxType) {
-			go firebase.SendFCMNotification(s.DB, fr.recipient, firebase.FCMPayload{
-				Title:     "New Message",
-				MessageID: msgID,
-			})
+		if shouldUseFCMDelivery(boxType) {
+			// r.Context() is cancelled the moment the response is written, so the
+			// detached send gets its own deadline while keeping request values.
+			fcmCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), fcmDeliveryTimeout)
+			go func(recipient, messageID string) {
+				defer cancel()
+				firebase.SendFCMNotification(fcmCtx, s.Store, recipient, firebase.FCMPayload{
+					Title:     "New Message",
+					MessageID: messageID,
+				})
+			}(fr.recipient, msgID)
 		}
 
 		results = append(results, SendMessageResult{Recipient: fr.recipient, MessageID: msgID})
