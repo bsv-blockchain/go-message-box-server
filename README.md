@@ -130,7 +130,13 @@ go test ./...
 
 ### Jest integration tests
 
-The `test-client/` directory contains 11 integration tests using `@bsv/message-box-client` and `@bsv/sdk` `ProtoWallet`, covering the full message lifecycle against a running server.
+The `test-client/` directory contains 26 integration tests against a running
+server: `messagebox.test.ts` drives the message lifecycle through
+`@bsv/message-box-client`, and `devices-permissions.test.ts` drives the device,
+permission and quote endpoints over `AuthFetch` directly (the client does not
+cover those routes). Both use an `@bsv/sdk` `ProtoWallet` for BRC-31 auth.
+
+Point them at a server on any backend — the responses are identical.
 
 ```bash
 # Terminal 1: Start the server
@@ -146,6 +152,9 @@ npx jest --verbose
 - Send message (plaintext, JSON body, send-to-self)
 - List messages (populated box, empty box)
 - Acknowledge messages (valid, already-acknowledged, nonexistent)
+- Register and list devices (upsert on re-registration, platform validation)
+- Set, get and list permissions (box-wide vs sender-specific, order, paging, filtering)
+- Delivery quotes
 - Input validation (empty recipient, empty body)
 - Multiple messages in the same box
 
