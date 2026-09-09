@@ -49,7 +49,6 @@ type SendMessageResponse struct {
 // DeviceOut represents a device in responses.
 // @Description Device registration object
 type DeviceOut struct {
-	ID        int     `json:"id" example:"1"`
 	DeviceID  *string `json:"deviceId,omitempty" example:"device-abc"`
 	Platform  *string `json:"platform,omitempty" example:"ios"`
 	FCMToken  string  `json:"fcmToken" example:"...abc123"`
@@ -69,9 +68,8 @@ type ListDevicesResponse struct {
 // RegisterDeviceResponse represents the response for registerDevice.
 // @Description Response after registering a device
 type RegisterDeviceResponse struct {
-	Status   string `json:"status" example:"success"`
-	Message  string `json:"message" example:"Device registered successfully for push notifications"`
-	DeviceID int64  `json:"deviceId" example:"1"`
+	Status  string `json:"status" example:"success"`
+	Message string `json:"message" example:"Device registered successfully for push notifications"`
 }
 
 // SetPermissionResponse represents the response for setPermission.

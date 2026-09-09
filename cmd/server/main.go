@@ -14,10 +14,12 @@ import (
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
 	_ "github.com/bsv-blockchain/go-message-box-server/docs"
 	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
+	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/defs"
@@ -39,6 +41,18 @@ import (
 // @name x-bsv-auth-identity-key
 // @description BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-* headers (identity-key, nonce, signature, etc.)
 
+// openStore builds the storage backend selected by STORAGE_BACKEND.
+func openStore(cfg *config.Config) (mbstorage.Store, error) {
+	switch cfg.StorageBackend {
+	case "sql", "":
+		return sqlstore.New(cfg.DBDriver, cfg.DBSource)
+	case "mongo":
+		return mongostore.New(context.Background(), cfg.MongoURI, cfg.MongoDatabase)
+	default:
+		return nil, fmt.Errorf("unknown STORAGE_BACKEND %q (want \"sql\" or \"mongo\")", cfg.StorageBackend)
+	}
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -50,16 +64,16 @@ func main() {
 		logger.Enable()
 	}
 
-	// Open DB and run migrations
-	database, err := db.New(cfg.DBDriver, cfg.DBSource)
+	// Open the storage backend and bring its schema up to date
+	store, err := openStore(cfg)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("failed to open storage backend", "backend", cfg.StorageBackend, "error", err)
 		os.Exit(1)
 	}
-	defer database.Close()
+	defer store.Close()
 
-	if err := database.Migrate(); err != nil {
-		slog.Error("failed to run migrations", "error", err)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		slog.Error("failed to prepare storage schema", "error", err)
 		os.Exit(1)
 	}
 
@@ -82,7 +96,7 @@ func main() {
 	}
 	defer walletCleanup()
 
-	srv := handlers.NewServer(database, w)
+	srv := handlers.NewServer(store, w)
 
 	// Build router
 	mux := http.NewServeMux()

@@ -21,14 +21,24 @@ All endpoints require BRC-31 authentication via the `go-bsv-middleware` auth mid
 ## Architecture
 
 ```
-cmd/server/         - Entry point, middleware wiring, CORS handler
-internal/
+cmd/server/         - Entry point, storage backend selection, middleware wiring, CORS
+pkg/
   config/           - Environment variable loading
-  db/               - SQLite database, migrations, queries
-  handlers/         - HTTP route handlers
+  handlers/         - HTTP route handlers and fee/notification policy
+  storage/          - Backend-neutral persistence interface and domain types
+    sqlstore/       - SQLite and PostgreSQL implementation
+    mongostore/     - MongoDB implementation
+    storagetest/    - Conformance suite every implementation must pass
+internal/
+  firebase/         - FCM push notification delivery
   logger/           - Toggleable structured logger
 test-client/        - Jest integration tests (TypeScript)
 ```
+
+`pkg/config`, `pkg/handlers` and `pkg/storage` are exported so the server can be
+embedded. An embedder that wants its own persistence implements
+`storage.Store` and passes it to `handlers.NewServer` — running
+`storagetest.RunStoreTests` against it is the way to know it is correct.
 
 ### Key Dependencies
 
@@ -38,18 +48,44 @@ test-client/        - Jest integration tests (TypeScript)
 | `@bsv/auth-express-middleware` | `github.com/bsv-blockchain/go-bsv-middleware` (auth) |
 | `@bsv/payment-express-middleware` | `github.com/bsv-blockchain/go-bsv-middleware` (payment) |
 | Express.js | `net/http` (Go 1.22+ routing) |
-| Knex + MySQL | `database/sql` + SQLite (default) |
+| Knex + MySQL | `pkg/storage` over `database/sql` (SQLite/PostgreSQL) or MongoDB |
 | — | `github.com/bsv-blockchain/go-wallet-toolbox` (wallet) |
 
-## Database
+## Storage
 
-Uses SQLite by default (zero-config). Tables:
+Persistence sits behind the `storage.Store` interface in `pkg/storage`. Pick a
+backend with `STORAGE_BACKEND`:
 
-- **messageBox** — Named message boxes per identity key
+| Backend | Value | Configured by |
+|---|---|---|
+| SQLite (default) | `sql` | `DB_DRIVER=sqlite3`, `DB_SOURCE=messagebox.db` |
+| PostgreSQL | `sql` | `DB_DRIVER=postgres`, `DB_SOURCE=postgres://...` |
+| MongoDB | `mongo` | `MONGO_URI`, `MONGO_DATABASE` |
+
+The schema is created on startup and the data it holds is the same either way:
+
+- **message boxes** — Named message boxes per identity key
 - **messages** — Stored messages with sender, recipient, body
-- **message_permissions** — Per-sender or box-wide fee/block settings
-- **server_fees** — Server-level delivery fees per box type
-- **device_registrations** — FCM tokens for push notifications
+- **message permissions** — Per-sender or box-wide fee/block settings
+- **server fees** — Server-level delivery fees per box type
+- **device registrations** — FCM tokens for push notifications
+
+The SQL backend keeps the original relational shape, including the `messageBox`
+table and its integer foreign key; MongoDB stores the box name on the message
+instead. Neither detail is visible through the interface or the HTTP API.
+
+### Testing a backend
+
+`pkg/storage/storagetest` holds the conformance suite. SQLite runs it on every
+`go test ./...`; PostgreSQL and MongoDB run it when pointed at a database:
+
+```bash
+POSTGRES_TEST_DSN='postgres://user:pass@localhost:5432/messagebox_test?sslmode=disable' \
+  go test ./pkg/storage/sqlstore/
+MONGO_TEST_URI='mongodb://localhost:27017' go test ./pkg/storage/mongostore/
+```
+
+Both drop their tables/collections first, so point them at a throwaway database.
 
 ## Wallet
 
@@ -64,9 +100,8 @@ Network is configurable via `BSV_NETWORK` (mainnet/testnet).
 
 ## Differences from the Original
 
-1. **Database**: Uses SQLite instead of MySQL by default (configurable via `DB_DRIVER`/`DB_SOURCE`)
+1. **Database**: SQLite instead of MySQL by default, with PostgreSQL and MongoDB also supported (see [Storage](#storage))
 2. **WebSockets**: Not yet implemented (HTTP API is fully compatible)
-3. **Firebase/FCM**: Push notification sending is stubbed — device registration works, but actual FCM delivery requires Firebase Admin SDK integration
 
 ## Quick Start
 
@@ -95,7 +130,13 @@ go test ./...
 
 ### Jest integration tests
 
-The `test-client/` directory contains 11 integration tests using `@bsv/message-box-client` and `@bsv/sdk` `ProtoWallet`, covering the full message lifecycle against a running server.
+The `test-client/` directory contains 26 integration tests against a running
+server: `messagebox.test.ts` drives the message lifecycle through
+`@bsv/message-box-client`, and `devices-permissions.test.ts` drives the device,
+permission and quote endpoints over `AuthFetch` directly (the client does not
+cover those routes). Both use an `@bsv/sdk` `ProtoWallet` for BRC-31 auth.
+
+Point them at a server on any backend — the responses are identical.
 
 ```bash
 # Terminal 1: Start the server
@@ -111,6 +152,9 @@ npx jest --verbose
 - Send message (plaintext, JSON body, send-to-self)
 - List messages (populated box, empty box)
 - Acknowledge messages (valid, already-acknowledged, nonexistent)
+- Register and list devices (upsert on re-registration, platform validation)
+- Set, get and list permissions (box-wide vs sender-specific, order, paging, filtering)
+- Delivery quotes
 - Input validation (empty recipient, empty body)
 - Multiple messages in the same box
 
@@ -124,7 +168,10 @@ All tests use real BRC-31 AuthFetch authentication against the running server.
 | `NODE_ENV` | `development` | Environment (`development`, `production`) |
 | `PORT` | `8080` (dev) / `3000` (prod) | HTTP listen port |
 | `ROUTING_PREFIX` | `` | URL prefix for all routes |
-| `DB_DRIVER` | `sqlite3` | Database driver |
-| `DB_SOURCE` | `messagebox.db` | Database connection string |
+| `STORAGE_BACKEND` | `sql` | Storage backend (`sql`, `mongo`) |
+| `DB_DRIVER` | `sqlite3` | SQL driver (`sqlite3`, `postgres`) |
+| `DB_SOURCE` | `messagebox.db` | SQL connection string or file path |
+| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection URI |
+| `MONGO_DATABASE` | `messagebox` | MongoDB database name |
 | `BSV_NETWORK` | `mainnet` | BSV network (`mainnet`, `testnet`) |
 | `ENABLE_WEBSOCKETS` | `true` | Enable WebSocket support (not yet implemented) |

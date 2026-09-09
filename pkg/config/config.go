@@ -14,9 +14,16 @@ type Config struct {
 	ServerPrivateKey string
 	EnableWebsockets bool
 
-	// Database
-	DBDriver string // "sqlite3", "postgres", or "mysql"
+	// Storage
+	StorageBackend string // "sql" or "mongo"
+
+	// SQL storage backend
+	DBDriver string // "sqlite3" or "postgres"
 	DBSource string // DSN or file path
+
+	// Mongo storage backend
+	MongoURI      string
+	MongoDatabase string
 
 	// Firebase (optional)
 	FirebaseProjectID          string
@@ -35,6 +42,10 @@ func Load() (*Config, error) {
 		RoutingPrefix:    getEnv("ROUTING_PREFIX", ""),
 		ServerPrivateKey: os.Getenv("SERVER_PRIVATE_KEY"),
 		EnableWebsockets: getEnv("ENABLE_WEBSOCKETS", "true") == "true",
+		StorageBackend:   getEnv("STORAGE_BACKEND", "sql"),
+		MongoURI:         getEnv("MONGO_URI", "mongodb://localhost:27017"),
+		MongoDatabase:    getEnv("MONGO_DATABASE", "messagebox"),
+
 		DBDriver:         getEnv("DB_DRIVER", "sqlite3"),
 		DBSource:         getEnv("DB_SOURCE", "messagebox.db"),
 		BSVNetwork:       getEnv("BSV_NETWORK", "mainnet"),

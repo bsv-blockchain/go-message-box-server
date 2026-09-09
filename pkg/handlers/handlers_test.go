@@ -4,78 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 // mockIdentityKey is used for tests - we bypass the middleware auth
 const mockIdentityKey = "028d37b941208cd6b8a4c28288eda5f2f16c2b3ab0fcb6d13c18b47fe37b971fc1"
 
+// setupTestServer returns a Server backed by the in-memory fake store. The
+// wallet is nil, so payment paths are out of reach here.
 func setupTestServer(t *testing.T) *Server {
 	t.Helper()
-	d, err := db.New("sqlite3", ":memory:")
-	if err != nil {
+	store := newFakeStore()
+	if err := store.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Migrate(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	return &Server{DB: d}
+	return &Server{Store: store}
 }
 
-// Since we can't easily mock the middleware identity extraction in unit tests,
-// we'll test the DB layer directly and the handler JSON structure.
-// Integration tests with the full middleware stack would require a real wallet.
-
-func TestSendAndListMessages(t *testing.T) {
-	srv := setupTestServer(t)
-
-	// Directly insert via DB (simulating what the handler does after auth)
-	mbID, err := srv.DB.EnsureMessageBox(mockIdentityKey, "inbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := `{"message":"hello world"}`
-	err = srv.DB.InsertMessage("test-msg-1", mbID, "sender123", mockIdentityKey, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// List messages
-	msgs, err := srv.DB.ListMessages(mockIdentityKey, mbID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
-	}
-	if msgs[0].Body != body {
-		t.Fatalf("unexpected body: %s", msgs[0].Body)
-	}
-
-	// Acknowledge
-	deleted, err := srv.DB.AcknowledgeMessages(mockIdentityKey, []string{"test-msg-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 1 {
-		t.Fatalf("expected 1 deleted, got %d", deleted)
-	}
-
-	// List again - should be empty
-	msgs, err = srv.DB.ListMessages(mockIdentityKey, mbID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 0 {
-		t.Fatalf("expected 0 messages, got %d", len(msgs))
-	}
-}
+// The middleware identity extraction can't be mocked, so the HTTP-level tests
+// below only reach the unauthenticated paths. Everything the handlers do to the
+// store is covered by the conformance suite; the policy layer is covered
+// directly.
 
 func TestListMessagesHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
@@ -108,82 +61,139 @@ func TestAcknowledgeHandler_NoAuth(t *testing.T) {
 	}
 }
 
-func TestPermissionsFlow(t *testing.T) {
+func TestRegisterDeviceHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// Set permission via DB
-	err := srv.DB.SetMessagePermission(mockIdentityKey, nil, "inbox", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body, _ := json.Marshal(map[string]any{"fcmToken": "tok-1"})
+	req := httptest.NewRequest("POST", "/registerDevice", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 
-	// Get permission
-	perm, err := srv.DB.GetPermission(mockIdentityKey, nil, "inbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm == nil {
-		t.Fatal("expected permission record")
-	}
-	if perm.RecipientFee != 0 {
-		t.Fatalf("expected fee 0, got %d", perm.RecipientFee)
-	}
+	w := httptest.NewRecorder()
+	srv.RegisterDevice(w, req)
 
-	// Update to blocked
-	err = srv.DB.SetMessagePermission(mockIdentityKey, nil, "inbox", -1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	perm, err = srv.DB.GetPermission(mockIdentityKey, nil, "inbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm.RecipientFee != -1 {
-		t.Fatalf("expected fee -1, got %d", perm.RecipientFee)
+	if w.Code != 401 {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
 
-func TestQuoteFlow(t *testing.T) {
-	srv := setupTestServer(t)
-
-	// Get delivery fee
-	fee, err := srv.DB.GetServerDeliveryFee("notifications")
-	if err != nil {
-		t.Fatal(err)
+func TestSmartDefaultFee(t *testing.T) {
+	if got := smartDefaultFee("notifications"); got != 10 {
+		t.Errorf("smartDefaultFee(notifications) = %d, want 10", got)
 	}
-	if fee != 10 {
-		t.Fatalf("expected 10, got %d", fee)
-	}
-
-	// Get recipient fee (will auto-create default for notifications = 10)
-	rf, err := srv.DB.GetRecipientFee(mockIdentityKey, "somesender", "notifications")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rf != 10 {
-		t.Fatalf("expected 10 (smart default), got %d", rf)
+	if got := smartDefaultFee("inbox"); got != 0 {
+		t.Errorf("smartDefaultFee(inbox) = %d, want 0", got)
 	}
 }
 
-func TestInsertDuplicateMessage(t *testing.T) {
-	srv := setupTestServer(t)
-
-	mbID, err := srv.DB.EnsureMessageBox(mockIdentityKey, "inbox")
-	if err != nil {
-		t.Fatal(err)
+func TestShouldUseFCMDelivery(t *testing.T) {
+	if !shouldUseFCMDelivery("notifications") {
+		t.Error("shouldUseFCMDelivery(notifications) = false, want true")
 	}
-
-	body := `{"message":"hello"}`
-	if err := srv.DB.InsertMessage("dup-msg-1", mbID, "sender123", mockIdentityKey, body); err != nil {
-		t.Fatal(err)
-	}
-
-	err = srv.DB.InsertMessage("dup-msg-1", mbID, "sender123", mockIdentityKey, body)
-	if !errors.Is(err, db.ErrDuplicateMessage) {
-		t.Fatalf("expected ErrDuplicateMessage, got %v", err)
+	if shouldUseFCMDelivery("inbox") {
+		t.Error("shouldUseFCMDelivery(inbox) = true, want false")
 	}
 }
 
-// suppress unused import
-var _ = context.Background
+func TestSortOrder(t *testing.T) {
+	if got := sortOrder("asc"); got != storage.SortAsc {
+		t.Errorf("sortOrder(asc) = %v, want SortAsc", got)
+	}
+	for _, param := range []string{"desc", "", "DESC", "nonsense"} {
+		if got := sortOrder(param); got != storage.SortDesc {
+			t.Errorf("sortOrder(%q) = %v, want SortDesc", param, got)
+		}
+	}
+}
+
+func TestRecipientFee(t *testing.T) {
+	const sender = "02sender"
+	ctx := context.Background()
+
+	t.Run("PersistsSmartDefaultOnMiss", func(t *testing.T) {
+		srv := setupTestServer(t)
+
+		fee, err := srv.recipientFee(ctx, mockIdentityKey, sender, "notifications")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fee != 10 {
+			t.Errorf("fee = %d, want 10 (smart default)", fee)
+		}
+
+		// The default must be written, as it was when this lived in the SQL layer.
+		p, err := srv.Store.GetPermission(ctx, mockIdentityKey, nil, "notifications")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p == nil {
+			t.Fatal("box-wide permission was not persisted")
+		}
+		if p.RecipientFee != 10 {
+			t.Errorf("persisted fee = %d, want 10", p.RecipientFee)
+		}
+	})
+
+	t.Run("BoxWideBeatsSmartDefault", func(t *testing.T) {
+		srv := setupTestServer(t)
+		if err := srv.Store.SetPermission(ctx, mockIdentityKey, nil, "notifications", 3); err != nil {
+			t.Fatal(err)
+		}
+
+		fee, err := srv.recipientFee(ctx, mockIdentityKey, sender, "notifications")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fee != 3 {
+			t.Errorf("fee = %d, want 3", fee)
+		}
+	})
+
+	t.Run("SenderSpecificBeatsBoxWide", func(t *testing.T) {
+		srv := setupTestServer(t)
+		if err := srv.Store.SetPermission(ctx, mockIdentityKey, nil, "inbox", 5); err != nil {
+			t.Fatal(err)
+		}
+		senderCopy := sender
+		if err := srv.Store.SetPermission(ctx, mockIdentityKey, &senderCopy, "inbox", storage.FeeBlocked); err != nil {
+			t.Fatal(err)
+		}
+
+		fee, err := srv.recipientFee(ctx, mockIdentityKey, sender, "inbox")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fee != storage.FeeBlocked {
+			t.Errorf("fee = %d, want %d", fee, storage.FeeBlocked)
+		}
+	})
+
+	t.Run("EmptySenderSkipsSenderLookup", func(t *testing.T) {
+		srv := setupTestServer(t)
+		if err := srv.Store.SetPermission(ctx, mockIdentityKey, nil, "inbox", 7); err != nil {
+			t.Fatal(err)
+		}
+
+		fee, err := srv.recipientFee(ctx, mockIdentityKey, "", "inbox")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fee != 7 {
+			t.Errorf("fee = %d, want 7", fee)
+		}
+	})
+}
+
+func TestFormatTime(t *testing.T) {
+	// A non-UTC instant must be converted, not just stamped with a Z. The SQL
+	// drivers round-trip the server's local offset, so skipping the conversion
+	// would mislabel local time as UTC and diverge from the Mongo backend.
+	berlin := time.FixedZone("CEST", 2*60*60)
+	local := time.Date(2026, 1, 2, 15, 4, 5, 123_000_000, berlin)
+
+	if got, want := formatTime(local), "2026-01-02T13:04:05.123Z"; got != want {
+		t.Errorf("formatTime(%v) = %q, want %q", local, got, want)
+	}
+	if got := formatTime(local.UTC()); got != formatTime(local) {
+		t.Errorf("same instant formatted differently: %q vs %q", got, formatTime(local))
+	}
+}

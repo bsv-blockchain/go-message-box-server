@@ -40,9 +40,6 @@ definitions:
       fcmToken:
         example: '...abc123'
         type: string
-      id:
-        example: 1
-        type: integer
       lastUsed:
         example: "2024-01-01T12:00:00.000Z"
         type: string
@@ -111,7 +108,7 @@ definitions:
     properties:
       permissions:
         items:
-          $ref: '#/definitions/handlers.PermissionDetail'
+          $ref: '#/definitions/handlers.PermissionDetailList'
         type: array
       status:
         example: success
@@ -140,7 +137,7 @@ definitions:
         type: string
     type: object
   handlers.PermissionDetail:
-    description: Permission details
+    description: Permission details (camelCase for getPermission endpoint)
     properties:
       createdAt:
         example: "2024-01-01T12:00:00.000Z"
@@ -158,6 +155,25 @@ definitions:
         example: payment_required
         type: string
       updatedAt:
+        example: "2024-01-01T12:00:00.000Z"
+        type: string
+    type: object
+  handlers.PermissionDetailList:
+    description: Permission details (snake_case for listPermissions endpoint)
+    properties:
+      created_at:
+        example: "2024-01-01T12:00:00.000Z"
+        type: string
+      message_box:
+        example: inbox
+        type: string
+      recipient_fee:
+        example: 100
+        type: integer
+      sender:
+        example: 03abc...
+        type: string
+      updated_at:
         example: "2024-01-01T12:00:00.000Z"
         type: string
     type: object
@@ -248,9 +264,6 @@ definitions:
   handlers.RegisterDeviceResponse:
     description: Response after registering a device
     properties:
-      deviceId:
-        example: 1
-        type: integer
       message:
         example: Device registered successfully for push notifications
         type: string

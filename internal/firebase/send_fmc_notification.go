@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 var DEVICE_SEND_MESSAGE_TIMEOUT = 5 * time.Second
@@ -26,8 +26,8 @@ type SendFCMNotificationResult struct {
 }
 
 // SendFCMNotification pushes notification to all registered devices for a recipient.
-// Looks up FCM tokens from device_registrations table and sends to all active devices.
-func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) *SendFCMNotificationResult {
+// Looks up FCM tokens from the device store and sends to all active devices.
+func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recipient string, payload FCMPayload) *SendFCMNotificationResult {
 	if !IsEnabled() {
 		return &SendFCMNotificationResult{Success: false, Error: "FCM not configured"}
 	}
@@ -35,26 +35,30 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 	logger.Log("[DEBUG] Attempting to send FCM notification to", "recipient", recipient)
 	logger.Log("[DEBUG] Payload", "payload", payload)
 
-	devices, err := database.ListActiveDevices(recipient)
+	deviceList, err := devices.ListActiveDevices(ctx, recipient)
 	if err != nil {
 		logger.Error("[FCM] Failed to get devices", "error", err, "recipient", recipient)
 		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to get devices: %v", err)}
 	}
 
-	if len(devices) == 0 {
+	if len(deviceList) == 0 {
 		logger.Log("[FCM] No active devices found", "recipient", recipient)
 		return &SendFCMNotificationResult{Success: false, Error: "No registered devices found for recipient"}
 	}
 
-	logger.Log("[FCM] Sending notifications", "recipient", recipient, "deviceCount", len(devices))
+	logger.Log("[FCM] Sending notifications", "recipient", recipient, "deviceCount", len(deviceList))
 
 	var successCount, failureCount int
 
-	for _, device := range devices {
+	// Recording the outcome of a send must not depend on the send's own budget:
+	// a token found invalid on a timed-out attempt still has to be deactivated.
+	writeCtx := context.WithoutCancel(ctx)
+
+	for _, device := range deviceList {
 		msg := buildMessage(device.FCMToken, payload)
 
-		ctx, cancel := context.WithTimeout(context.Background(), DEVICE_SEND_MESSAGE_TIMEOUT)
-		_, err := Client().Send(ctx, msg)
+		sendCtx, cancel := context.WithTimeout(ctx, DEVICE_SEND_MESSAGE_TIMEOUT)
+		_, err := Client().Send(sendCtx, msg)
 		cancel()
 
 		if err != nil {
@@ -64,7 +68,7 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 			// we only mark devices as disabled when token is invalid
 			if isInvalidTokenError(err) {
 				logger.Log("[FCM] Deactivating invalid token", "tokenSuffix", lastN(device.FCMToken, 10))
-				if err := database.DeactivateDevice(device.FCMToken); err != nil {
+				if err := devices.DeactivateDevice(writeCtx, device.FCMToken); err != nil {
 					logger.Error("[FCM] Failed to deactivate device", "error", err)
 				}
 			}
@@ -74,7 +78,7 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 		successCount++
 		logger.Log("[FCM] Notification sent", "tokenSuffix", lastN(device.FCMToken, 10))
 
-		if err := database.UpdateDeviceLastUsed(device.FCMToken); err != nil {
+		if err := devices.UpdateDeviceLastUsed(writeCtx, device.FCMToken); err != nil {
 			logger.Error("[FCM] Failed to update last_used", "error", err)
 		}
 	}
@@ -84,7 +88,7 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 	// if not a single device received a notification consider it a fail
 	// otherwise we consider it a success
 	if successCount == 0 {
-		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to send to all %d registered devices", len(devices))}
+		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to send to all %d registered devices", len(deviceList))}
 	}
 
 	return &SendFCMNotificationResult{Success: true}
