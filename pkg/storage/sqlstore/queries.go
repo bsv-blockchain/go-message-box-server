@@ -196,9 +196,10 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 // insert. Neither one modifies an existing row, so the outcome is a duplicate
 // box-wide permission rather than a lost one.
 //
-// Closing the gap needs an expression unique index — UNIQUE(recipient,
-// COALESCE(sender, ”), message_box) — which cannot be created on a database
-// that already holds duplicates, so it wants a dedupe migration of its own.
+// Closing the gap needs an expression unique index over
+// (recipient, COALESCE(sender, ”), message_box), which cannot be created on a
+// database that already holds duplicates, so it wants a dedupe migration of
+// its own.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := time.Now()
 
