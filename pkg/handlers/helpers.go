@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
@@ -43,6 +44,18 @@ func NewServer(store storage.Store, wallet sdk.Interface) *Server {
 		Store:  store,
 		wallet: wallet,
 	}
+}
+
+// timestampLayout labels times with a literal Z, so the value formatted must
+// actually be UTC. Use formatTime rather than calling Format directly.
+const timestampLayout = "2006-01-02T15:04:05.000Z"
+
+// formatTime renders a timestamp for the wire. Backends store times in
+// different zones — mongostore normalises to UTC, the SQL drivers round-trip
+// the server's local offset — so the conversion happens here, once, and every
+// backend reports the same instant.
+func formatTime(t time.Time) string {
+	return t.UTC().Format(timestampLayout)
 }
 
 // writeJSON writes a JSON response.

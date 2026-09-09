@@ -7,16 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
-
-// fcmDeliveryTimeout bounds the detached push notification send.
-const fcmDeliveryTimeout = 30 * time.Second
 
 // SendMessage godoc
 // @Summary      Send a message to recipient(s)
@@ -276,10 +272,12 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 		if shouldUseFCMDelivery(boxType) {
 			// r.Context() is cancelled the moment the response is written, so the
-			// detached send gets its own deadline while keeping request values.
-			fcmCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), fcmDeliveryTimeout)
+			// detached send is decoupled from it while keeping request values.
+			// It carries no overall deadline on purpose: SendFCMNotification
+			// bounds each device individually, and a shared budget here would
+			// starve the tail of a long device list.
+			fcmCtx := context.WithoutCancel(r.Context())
 			go func(recipient, messageID string) {
-				defer cancel()
 				firebase.SendFCMNotification(fcmCtx, s.Store, recipient, firebase.FCMPayload{
 					Title:     "New Message",
 					MessageID: messageID,

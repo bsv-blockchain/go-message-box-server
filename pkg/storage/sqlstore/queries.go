@@ -186,6 +186,36 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 	return err
 }
 
+// SetPermissionIfAbsent implements storage.PermissionStore.
+//
+// The UNIQUE(recipient, sender, message_box) constraint does not constrain rows
+// with a NULL sender, since NULL != NULL, so the box-wide case cannot rely on
+// ON CONFLICT and guards with a NOT EXISTS subquery instead.
+func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	now := time.Now()
+
+	if sender == nil {
+		_, err := s.exec(ctx,
+			`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+			 SELECT ?, NULL, ?, ?, ?, ?
+			 WHERE NOT EXISTS (
+			   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
+			 )`,
+			recipient, messageBox, recipientFee, now, now,
+			recipient, messageBox,
+		)
+		return err
+	}
+
+	_, err := s.exec(ctx,
+		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(recipient, sender, message_box) DO NOTHING`,
+		recipient, *sender, messageBox, recipientFee, now, now,
+	)
+	return err
+}
+
 // GetPermission implements storage.PermissionStore.
 func (s *Store) GetPermission(ctx context.Context, recipient string, sender *string, messageBox string) (*storage.Permission, error) {
 	var row *sql.Row

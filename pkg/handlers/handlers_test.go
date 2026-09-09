@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
@@ -180,4 +181,19 @@ func TestRecipientFee(t *testing.T) {
 			t.Errorf("fee = %d, want 7", fee)
 		}
 	})
+}
+
+func TestFormatTime(t *testing.T) {
+	// A non-UTC instant must be converted, not just stamped with a Z. The SQL
+	// drivers round-trip the server's local offset, so skipping the conversion
+	// would mislabel local time as UTC and diverge from the Mongo backend.
+	berlin := time.FixedZone("CEST", 2*60*60)
+	local := time.Date(2026, 1, 2, 15, 4, 5, 123_000_000, berlin)
+
+	if got, want := formatTime(local), "2026-01-02T13:04:05.123Z"; got != want {
+		t.Errorf("formatTime(%v) = %q, want %q", local, got, want)
+	}
+	if got := formatTime(local.UTC()); got != formatTime(local) {
+		t.Errorf("same instant formatted differently: %q vs %q", got, formatTime(local))
+	}
 }

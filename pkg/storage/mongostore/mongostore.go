@@ -41,6 +41,7 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 		return nil, fmt.Errorf("failed to connect to mongo: %w", err)
 	}
 	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(ctx)
 		return nil, fmt.Errorf("failed to ping mongo: %w", err)
 	}
 	return &Store{client: client, db: client.Database(database)}, nil
@@ -219,6 +220,26 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 	return err
 }
 
+// SetPermissionIfAbsent implements storage.PermissionStore. The unique index on
+// (recipient, sender, messageBox) makes the upsert atomic, so a $setOnInsert-only
+// update cannot touch an existing row.
+func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	ts := now()
+	_, err := s.db.Collection(permissionsColl).UpdateOne(ctx,
+		permissionKey(recipient, sender, messageBox),
+		bson.M{"$setOnInsert": bson.M{
+			"recipient": recipient, "sender": sender, "messageBox": messageBox,
+			"recipientFee": recipientFee, "createdAt": ts, "updatedAt": ts,
+		}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	if mongo.IsDuplicateKeyError(err) {
+		// Another caller inserted it first, which is the outcome this asked for.
+		return nil
+	}
+	return err
+}
+
 // GetPermission implements storage.PermissionStore.
 func (s *Store) GetPermission(ctx context.Context, recipient string, sender *string, messageBox string) (*storage.Permission, error) {
 	var doc permissionDoc
@@ -256,6 +277,12 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 	total, err := coll.CountDocuments(ctx, filter)
 	if err != nil {
 		return storage.PermissionPage{}, err
+	}
+
+	// MongoDB reads a limit of 0 as "unlimited", where SQL's LIMIT 0 returns
+	// nothing. The contract follows SQL.
+	if q.Limit <= 0 {
+		return storage.PermissionPage{Total: int(total)}, nil
 	}
 
 	// BSON's type ordering already sorts null before strings, so sorting on

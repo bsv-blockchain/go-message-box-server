@@ -160,8 +160,8 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 				MessageBox:   messageBox,
 				RecipientFee: perm.RecipientFee,
 				Status:       status,
-				CreatedAt:    perm.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
-				UpdatedAt:    perm.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
+				CreatedAt:    formatTime(perm.CreatedAt),
+				UpdatedAt:    formatTime(perm.UpdatedAt),
 			},
 		})
 	} else {
@@ -249,8 +249,8 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 			Sender:       p.Sender,
 			MessageBox:   p.MessageBox,
 			RecipientFee: p.RecipientFee,
-			CreatedAt:    p.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
-			UpdatedAt:    p.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
+			CreatedAt:    formatTime(p.CreatedAt),
+			UpdatedAt:    formatTime(p.UpdatedAt),
 		})
 	}
 

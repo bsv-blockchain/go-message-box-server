@@ -15,6 +15,9 @@ func newSQLite(t *testing.T) storage.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each connection to ":memory:" is its own empty database, so the pool has
+	// to be pinned to one for a test to see its own writes.
+	s.db.SetMaxOpenConns(1)
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}

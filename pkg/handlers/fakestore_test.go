@@ -159,6 +159,16 @@ func (f *fakeStore) SetPermission(_ context.Context, recipient string, sender *s
 	return nil
 }
 
+func (f *fakeStore) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	f.mu.Lock()
+	_, exists := f.perms[makePermKey(recipient, sender, messageBox)]
+	f.mu.Unlock()
+	if exists {
+		return nil
+	}
+	return f.SetPermission(ctx, recipient, sender, messageBox, recipientFee)
+}
+
 func (f *fakeStore) GetPermission(_ context.Context, recipient string, sender *string, messageBox string) (*storage.Permission, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

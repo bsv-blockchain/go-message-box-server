@@ -51,8 +51,8 @@ func (s *Server) ListMessages(w http.ResponseWriter, r *http.Request) {
 			MessageID: m.MessageID,
 			Body:      m.Body,
 			Sender:    m.Sender,
-			CreatedAt: m.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
-			UpdatedAt: m.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
+			CreatedAt: formatTime(m.CreatedAt),
+			UpdatedAt: formatTime(m.UpdatedAt),
 		})
 	}
 

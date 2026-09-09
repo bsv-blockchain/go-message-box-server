@@ -50,6 +50,10 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 
 	var successCount, failureCount int
 
+	// Recording the outcome of a send must not depend on the send's own budget:
+	// a token found invalid on a timed-out attempt still has to be deactivated.
+	writeCtx := context.WithoutCancel(ctx)
+
 	for _, device := range deviceList {
 		msg := buildMessage(device.FCMToken, payload)
 
@@ -64,7 +68,7 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 			// we only mark devices as disabled when token is invalid
 			if isInvalidTokenError(err) {
 				logger.Log("[FCM] Deactivating invalid token", "tokenSuffix", lastN(device.FCMToken, 10))
-				if err := devices.DeactivateDevice(ctx, device.FCMToken); err != nil {
+				if err := devices.DeactivateDevice(writeCtx, device.FCMToken); err != nil {
 					logger.Error("[FCM] Failed to deactivate device", "error", err)
 				}
 			}
@@ -74,7 +78,7 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 		successCount++
 		logger.Log("[FCM] Notification sent", "tokenSuffix", lastN(device.FCMToken, 10))
 
-		if err := devices.UpdateDeviceLastUsed(ctx, device.FCMToken); err != nil {
+		if err := devices.UpdateDeviceLastUsed(writeCtx, device.FCMToken); err != nil {
 			logger.Error("[FCM] Failed to update last_used", "error", err)
 		}
 	}

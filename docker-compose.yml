@@ -15,7 +15,10 @@ services:
       timeout: 3s
       retries: 5
 
+  # Only needed with STORAGE_BACKEND=mongo. Start it with:
+  #   docker compose --profile mongo up
   mongo:
+    profiles: ["mongo"]
     image: mongo:8.2
     volumes:
       - mongo-data:/data/db
@@ -45,8 +48,6 @@ services:
       WALLET_STORAGE_URL: https://store-us-1.bsvb.tech
     depends_on:
       postgres:
-        condition: service_healthy
-      mongo:
         condition: service_healthy
     restart: unless-stopped
 

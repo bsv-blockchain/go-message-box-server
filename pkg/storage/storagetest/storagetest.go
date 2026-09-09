@@ -388,6 +388,51 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
+	t.Run("SetPermissionIfAbsentInserts", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.SetPermissionIfAbsent(ctx, alice, nil, "inbox", 4); err != nil {
+			t.Fatalf("SetPermissionIfAbsent: %v", err)
+		}
+		if p := getPerm(t, s, alice, nil, "inbox"); p == nil || p.RecipientFee != 4 {
+			t.Fatalf("got %+v, want fee 4", p)
+		}
+	})
+
+	// The fee fallback writes its default through SetPermissionIfAbsent while a
+	// recipient may be setting a real permission concurrently. It must never
+	// overwrite one — silently replacing a block with a free default would let
+	// any sender deliver.
+	t.Run("SetPermissionIfAbsentNeverOverwrites", func(t *testing.T) {
+		for _, sender := range []*string{nil, ptr(bob)} {
+			s := newStore(t)
+			setPerm(t, s, alice, sender, "inbox", storage.FeeBlocked)
+			before := getPerm(t, s, alice, sender, "inbox")
+
+			if err := s.SetPermissionIfAbsent(ctx, alice, sender, "inbox", 0); err != nil {
+				t.Fatalf("sender=%v: SetPermissionIfAbsent: %v", sender, err)
+			}
+
+			after := getPerm(t, s, alice, sender, "inbox")
+			if after == nil {
+				t.Fatalf("sender=%v: permission disappeared", sender)
+			}
+			if after.RecipientFee != storage.FeeBlocked {
+				t.Errorf("sender=%v: RecipientFee = %d, want the existing %d", sender, after.RecipientFee, storage.FeeBlocked)
+			}
+			if !after.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Errorf("sender=%v: UpdatedAt moved %v -> %v, want untouched", sender, before.UpdatedAt, after.UpdatedAt)
+			}
+
+			page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice, Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.Total != 1 {
+				t.Errorf("sender=%v: Total = %d, want 1 (no duplicate row)", sender, page.Total)
+			}
+		}
+	})
+
 	t.Run("FeeBlockedSurvives", func(t *testing.T) {
 		s := newStore(t)
 		setPerm(t, s, alice, ptr(bob), "inbox", storage.FeeBlocked)
@@ -502,6 +547,24 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		}
 		if got := permKeys(page.Items); !equalStrings(got, wantOrder[3:]) {
 			t.Errorf("got %v, want %v", got, wantOrder[3:])
+		}
+	})
+
+	// A zero Limit means "no rows", as LIMIT 0 does in SQL. MongoDB reads limit
+	// 0 as "unlimited", so this pins the contract for every backend.
+	t.Run("ZeroLimit", func(t *testing.T) {
+		s := newStore(t)
+		seedOrdered(t, s)
+
+		page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice})
+		if err != nil {
+			t.Fatalf("ListPermissions: %v", err)
+		}
+		if len(page.Items) != 0 {
+			t.Errorf("got %d items, want 0", len(page.Items))
+		}
+		if page.Total != 6 {
+			t.Errorf("Total = %d, want 6", page.Total)
 		}
 	})
 

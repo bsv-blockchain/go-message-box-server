@@ -48,8 +48,10 @@ func (s *Server) recipientFee(ctx context.Context, recipient, sender, messageBox
 		return p.RecipientFee, nil
 	}
 
+	// Insert-only: a recipient may have set a real permission between the
+	// lookups above and this write, and overwriting it would drop their block.
 	fee := smartDefaultFee(messageBox)
-	if err := s.Store.SetPermission(ctx, recipient, nil, messageBox, fee); err != nil {
+	if err := s.Store.SetPermissionIfAbsent(ctx, recipient, nil, messageBox, fee); err != nil {
 		return 0, err
 	}
 	return fee, nil

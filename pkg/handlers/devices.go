@@ -96,13 +96,13 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 		dev := DeviceOut{
 			FCMToken:  token,
 			Active:    d.Active,
-			CreatedAt: d.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
-			UpdatedAt: d.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
+			CreatedAt: formatTime(d.CreatedAt),
+			UpdatedAt: formatTime(d.UpdatedAt),
 		}
 		dev.DeviceID = d.DeviceID
 		dev.Platform = d.Platform
 		if d.LastUsed != nil {
-			dev.LastUsed = d.LastUsed.Format("2006-01-02T15:04:05.000Z")
+			dev.LastUsed = formatTime(*d.LastUsed)
 		}
 		out = append(out, dev)
 	}

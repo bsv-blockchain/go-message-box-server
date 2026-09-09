@@ -47,6 +47,12 @@ type PermissionStore interface {
 	// box-wide row. An existing row keeps its CreatedAt and gets a new UpdatedAt.
 	SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error
 
+	// SetPermissionIfAbsent creates the permission only if it does not already
+	// exist. An existing row is left exactly as it is — not updated, not
+	// duplicated. This is what the fee fallback's default write-back needs: it
+	// must never overwrite a permission the recipient set in the meantime.
+	SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error
+
 	// GetPermission returns (nil, nil) when no such permission exists.
 	GetPermission(ctx context.Context, recipient string, sender *string, messageBox string) (*Permission, error)
 
