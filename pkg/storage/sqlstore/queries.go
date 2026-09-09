@@ -188,9 +188,17 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 
 // SetPermissionIfAbsent implements storage.PermissionStore.
 //
-// The UNIQUE(recipient, sender, message_box) constraint does not constrain rows
-// with a NULL sender, since NULL != NULL, so the box-wide case cannot rely on
-// ON CONFLICT and guards with a NOT EXISTS subquery instead.
+// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
+// sender, since NULL != NULL, so the box-wide case cannot rely on ON CONFLICT
+// and guards with a NOT EXISTS subquery instead. That single statement is
+// atomic under SQLite, whose writers are serialised, but not under PostgreSQL's
+// READ COMMITTED: two concurrent callers can both pass the NOT EXISTS and both
+// insert. Neither one modifies an existing row, so the outcome is a duplicate
+// box-wide permission rather than a lost one.
+//
+// Closing the gap needs an expression unique index — UNIQUE(recipient,
+// COALESCE(sender, ”), message_box) — which cannot be created on a database
+// that already holds duplicates, so it wants a dedupe migration of its own.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := time.Now()
 
