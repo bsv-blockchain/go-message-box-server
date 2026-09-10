@@ -6,6 +6,8 @@ package storagetest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -429,6 +431,76 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 			}
 			if page.Total != 1 {
 				t.Errorf("sender=%v: Total = %d, want 1 (no duplicate row)", sender, page.Total)
+			}
+		}
+	})
+
+	// Every backend must guarantee one row per (recipient, sender, messageBox),
+	// including the box-wide row where sender is nil. The fee fallback calls
+	// SetPermissionIfAbsent on the hot send path, so concurrent sends to a fresh
+	// recipient and box race here in production.
+	//
+	// The goroutines are released from a barrier and the round is repeated,
+	// because a cold connection pool serialises the first few callers and hides
+	// the race entirely.
+	t.Run("SetPermissionIfAbsentIsAtomic", func(t *testing.T) {
+		const (
+			rounds      = 20
+			concurrency = 8
+		)
+
+		for _, sender := range []*string{nil, ptr(bob)} {
+			s := newStore(t)
+
+			// Warm the pool so the barrier actually releases into parallel work.
+			var warm sync.WaitGroup
+			for i := 0; i < concurrency; i++ {
+				warm.Add(1)
+				go func() {
+					defer warm.Done()
+					_, _ = s.GetPermission(ctx, "02warmup", nil, "inbox")
+				}()
+			}
+			warm.Wait()
+
+			duplicated := 0
+			for round := 0; round < rounds; round++ {
+				recipient := fmt.Sprintf("02racer-%d", round)
+
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				errs := make(chan error, concurrency)
+				for i := 0; i < concurrency; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						if err := s.SetPermissionIfAbsent(ctx, recipient, sender, "inbox", 0); err != nil {
+							errs <- err
+						}
+					}()
+				}
+				close(start)
+				wg.Wait()
+				close(errs)
+				for err := range errs {
+					t.Errorf("sender=%v round=%d: SetPermissionIfAbsent: %v", sender, round, err)
+				}
+
+				page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: recipient, Limit: 100})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Total != 1 {
+					duplicated++
+					if duplicated == 1 {
+						t.Errorf("sender=%v round=%d: Total = %d after %d concurrent calls, want 1",
+							sender, round, page.Total, concurrency)
+					}
+				}
+			}
+			if duplicated > 0 {
+				t.Errorf("sender=%v: %d/%d rounds produced duplicate rows", sender, duplicated, rounds)
 			}
 		}
 	})
