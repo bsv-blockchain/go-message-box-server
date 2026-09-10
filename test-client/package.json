@@ -12,7 +12,7 @@
   "license": "ISC",
   "devDependencies": {
     "@bsv/message-box-client": "^2.0.1",
-    "@bsv/sdk": "^2.0.3",
+    "@bsv/sdk": "^2.5.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.2.3",
     "jest": "^30.2.0",
