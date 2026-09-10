@@ -151,76 +151,32 @@ func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, err
 }
 
 // SetPermission implements storage.PermissionStore.
+//
+// The box-wide row (a NULL sender) needs no special handling: the conflict
+// target is the expression index created by EnsureSchema, which folds NULL to
+// the empty string, so one upsert covers both cases.
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := time.Now()
-
-	// NULL != NULL in unique constraints for both SQLite and PostgreSQL, so we need special handling
-	if sender == nil {
-		// Try update first
-		res, err := s.exec(ctx,
-			`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`,
-			recipientFee, now, recipient, messageBox,
-		)
-		if err != nil {
-			return err
-		}
-		affected, _ := res.RowsAffected()
-		if affected > 0 {
-			return nil
-		}
-		// Insert
-		_, err = s.exec(ctx,
-			`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, ?)`,
-			recipient, messageBox, recipientFee, now, now,
-		)
-		return err
-	}
-
-	// For non-null sender, ON CONFLICT works fine
 	_, err := s.exec(ctx,
 		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(recipient, sender, message_box) DO UPDATE SET recipient_fee = ?, updated_at = ?`,
-		recipient, *sender, messageBox, recipientFee, now, now, recipientFee, now,
+		 ON CONFLICT `+permissionConflictTarget+` DO UPDATE SET recipient_fee = ?, updated_at = ?`,
+		recipient, sender, messageBox, recipientFee, now, now,
+		recipientFee, now,
 	)
 	return err
 }
 
-// SetPermissionIfAbsent implements storage.PermissionStore.
-//
-// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
-// sender, since NULL != NULL, so the box-wide case cannot rely on ON CONFLICT
-// and guards with a NOT EXISTS subquery instead. That single statement is
-// atomic under SQLite, whose writers are serialised, but not under PostgreSQL's
-// READ COMMITTED: two concurrent callers can both pass the NOT EXISTS and both
-// insert. Neither one modifies an existing row, so the outcome is a duplicate
-// box-wide permission rather than a lost one.
-//
-// Closing the gap needs an expression unique index over
-// (recipient, COALESCE(sender, ”), message_box), which cannot be created on a
-// database that already holds duplicates, so it wants a dedupe migration of
-// its own.
+// SetPermissionIfAbsent implements storage.PermissionStore. The expression
+// unique index makes DO NOTHING atomic for the box-wide row too, so concurrent
+// callers converge on one row instead of each inserting their own.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := time.Now()
-
-	if sender == nil {
-		_, err := s.exec(ctx,
-			`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
-			 SELECT ?, NULL, ?, ?, ?, ?
-			 WHERE NOT EXISTS (
-			   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
-			 )`,
-			recipient, messageBox, recipientFee, now, now,
-			recipient, messageBox,
-		)
-		return err
-	}
-
 	_, err := s.exec(ctx,
 		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(recipient, sender, message_box) DO NOTHING`,
-		recipient, *sender, messageBox, recipientFee, now, now,
+		 ON CONFLICT `+permissionConflictTarget+` DO NOTHING`,
+		recipient, sender, messageBox, recipientFee, now, now,
 	)
 	return err
 }

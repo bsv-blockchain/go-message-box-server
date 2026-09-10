@@ -6,6 +6,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -88,6 +89,26 @@ func nullTime(n sql.NullTime) *time.Time {
 	return &v
 }
 
+// permissionUniqueIndex enforces one permission row per
+// (recipient, sender, message_box), treating a NULL sender as the empty string
+// so that the box-wide row is covered too. A plain UNIQUE constraint cannot do
+// this: SQL treats NULLs as distinct, which is why the table constraint alone
+// let concurrent callers insert duplicate box-wide rows under PostgreSQL.
+const permissionUniqueIndex = `CREATE UNIQUE INDEX IF NOT EXISTS idx_message_permissions_unique
+	ON message_permissions(recipient, COALESCE(sender, ''), message_box)`
+
+// permissionConflictTarget names that index as an upsert conflict target. Both
+// SQLite and PostgreSQL can infer an expression index this way.
+const permissionConflictTarget = `(recipient, COALESCE(sender, ''), message_box)`
+
+// ErrDuplicatePermissions is returned by EnsureSchema when the database already
+// holds duplicate permission rows, which blocks the unique index. Deduplicating
+// deletes rows, so it is never done implicitly on startup — run the server with
+// -dedupe-permissions, or call DedupePermissions.
+var ErrDuplicatePermissions = errors.New(
+	"message_permissions holds duplicate rows for the same (recipient, sender, message_box); " +
+		"run the server once with -dedupe-permissions to remove them")
+
 // EnsureSchema runs all migrations to bring the schema up to date.
 func (s *Store) EnsureSchema(ctx context.Context) error {
 	var migrations []string
@@ -103,7 +124,72 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("migration failed: %s: %w", m[:min(60, len(m))], err)
 		}
 	}
+
+	return s.ensurePermissionUniqueIndex(ctx)
+}
+
+// ensurePermissionUniqueIndex creates permissionUniqueIndex, reporting a
+// duplicate backlog as ErrDuplicatePermissions rather than letting the index
+// creation fail with a message that says nothing about how to fix it.
+func (s *Store) ensurePermissionUniqueIndex(ctx context.Context) error {
+	n, err := s.countDuplicatePermissions(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check for duplicate permissions: %w", err)
+	}
+	if n > 0 {
+		return fmt.Errorf("%w (%d duplicate rows)", ErrDuplicatePermissions, n)
+	}
+
+	if _, err := s.db.ExecContext(ctx, permissionUniqueIndex); err != nil {
+		return fmt.Errorf("failed to create the permission unique index: %w", err)
+	}
 	return nil
+}
+
+// countDuplicatePermissions counts the rows that would have to go for the
+// unique index to hold.
+func (s *Store) countDuplicatePermissions(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(c - 1), 0) FROM (
+		   SELECT COUNT(*) AS c FROM message_permissions
+		   GROUP BY recipient, COALESCE(sender, ''), message_box
+		   HAVING COUNT(*) > 1
+		 ) dupes`,
+	).Scan(&n)
+	return n, err
+}
+
+// DedupePermissions removes duplicate permission rows so that the unique index
+// can be created, keeping one row per (recipient, sender, message_box) and
+// returning the number deleted. It is safe to run repeatedly.
+//
+// Which row survives is a security decision, not a bookkeeping one. A duplicate
+// pair can hold conflicting intent — an older row a stale fee write-back
+// created, and a newer row where the recipient blocked a sender — so keeping the
+// lowest id would delete the block and leave delivery open. The ordering below
+// keeps any blocked row first, then the most recently updated, then the highest
+// id: it collapses toward the most restrictive setting, which is the only safe
+// direction when the rows disagree.
+func (s *Store) DedupePermissions(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM message_permissions WHERE id IN (
+		   SELECT id FROM (
+		     SELECT id, ROW_NUMBER() OVER (
+		       PARTITION BY recipient, COALESCE(sender, ''), message_box
+		       ORDER BY CASE WHEN recipient_fee = `+fmt.Sprint(storage.FeeBlocked)+` THEN 0 ELSE 1 END,
+		                updated_at DESC,
+		                id DESC
+		     ) AS rn
+		     FROM message_permissions
+		   ) ranked
+		   WHERE rn > 1
+		 )`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to deduplicate permissions: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 func commonMigrations() []string {
@@ -147,8 +233,7 @@ func sqliteMigrations() []string {
 			recipient TEXT NOT NULL,
 			sender TEXT,
 			message_box TEXT NOT NULL,
-			recipient_fee INTEGER NOT NULL,
-			UNIQUE(recipient, sender, message_box)
+			recipient_fee INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS server_fees (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,6 +256,16 @@ func sqliteMigrations() []string {
 	}
 	return append(tables, commonMigrations()...)
 }
+
+// postgresDropRedundantPermissionUnique removes the table-level UNIQUE that
+// older databases were created with. It is redundant once
+// permissionUniqueIndex exists, and actively harmful: an INSERT whose
+// ON CONFLICT targets the expression index raises on a violation of any other
+// constraint, so a sender-specific upsert would fail instead of updating.
+// SQLite cannot drop a constraint without rebuilding the table; it tolerates
+// both, so existing SQLite databases keep theirs.
+const postgresDropRedundantPermissionUnique = `ALTER TABLE message_permissions
+	DROP CONSTRAINT IF EXISTS message_permissions_recipient_sender_message_box_key`
 
 func postgresMigrations() []string {
 	tables := []string{
@@ -198,8 +293,7 @@ func postgresMigrations() []string {
 			recipient TEXT NOT NULL,
 			sender TEXT,
 			message_box TEXT NOT NULL,
-			recipient_fee INTEGER NOT NULL,
-			UNIQUE(recipient, sender, message_box)
+			recipient_fee INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS server_fees (
 			id SERIAL PRIMARY KEY,
@@ -220,7 +314,7 @@ func postgresMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	return append(tables, commonMigrations()...)
+	return append(append(tables, postgresDropRedundantPermissionUnique), commonMigrations()...)
 }
 
 // compile-time assertion that Store satisfies the contract.

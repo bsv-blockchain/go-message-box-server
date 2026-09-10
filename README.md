@@ -74,6 +74,36 @@ The SQL backend keeps the original relational shape, including the `messageBox`
 table and its integer foreign key; MongoDB stores the box name on the message
 instead. Neither detail is visible through the interface or the HTTP API.
 
+### Upgrading a database created before permission uniqueness
+
+Permissions are unique per `(recipient, sender, message_box)`, with a NULL
+sender — the box-wide default — folded to the empty string so it is covered too.
+A plain `UNIQUE` constraint cannot express that, because SQL treats NULLs as
+distinct, so older databases could accumulate duplicate box-wide rows under
+PostgreSQL when concurrent sends raced.
+
+Startup creates the index and, if duplicates are already present, refuses to
+start rather than delete rows on its own:
+
+```
+ERROR failed to prepare storage schema error="message_permissions holds duplicate
+rows for the same (recipient, sender, message_box); run the server once with
+-dedupe-permissions to remove them (2 duplicate rows)"
+```
+
+Resolving it is a deliberate one-shot step:
+
+```bash
+./messagebox-server -dedupe-permissions   # deletes rows, then exits
+./messagebox-server                        # starts normally
+```
+
+The dedupe keeps one row per key, preferring a blocked row (`recipient_fee = -1`)
+and then the most recently updated one — it collapses toward the most
+restrictive setting, so a cleanup can never turn a block into free delivery.
+SQLite serialises its writers and cannot produce these duplicates, so in
+practice only PostgreSQL databases predating this change need it.
+
 ### Testing a backend
 
 `pkg/storage/storagetest` holds the conformance suite. SQLite runs it on every
