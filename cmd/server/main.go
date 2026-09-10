@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -46,6 +47,25 @@ import (
 // of hanging before ListenAndServe.
 const storeSetupTimeout = 15 * time.Second
 
+// runDedupePermissions removes duplicate permission rows and exits. It is a
+// deliberate operator action rather than part of startup, because it deletes
+// rows: EnsureSchema reports duplicates and refuses instead of resolving them
+// on its own.
+func runDedupePermissions(ctx context.Context, store mbstorage.Store) {
+	sqlStore, ok := store.(*sqlstore.Store)
+	if !ok {
+		slog.Error("-dedupe-permissions applies to the sql backend only", "backend", "mongo")
+		os.Exit(1)
+	}
+
+	deleted, err := sqlStore.DedupePermissions(ctx)
+	if err != nil {
+		slog.Error("failed to deduplicate permissions", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("deduplicated permissions; restart without the flag to continue", "rowsDeleted", deleted)
+}
+
 // openStore builds the storage backend selected by STORAGE_BACKEND.
 func openStore(ctx context.Context, cfg *config.Config) (mbstorage.Store, error) {
 	switch cfg.StorageBackend {
@@ -59,6 +79,12 @@ func openStore(ctx context.Context, cfg *config.Config) (mbstorage.Store, error)
 }
 
 func main() {
+	dedupePermissions := flag.Bool("dedupe-permissions", false,
+		"remove duplicate message_permissions rows, then exit. Deletes data: keeps one row per "+
+			"(recipient, sender, message_box), preferring a blocked row and then the most recently "+
+			"updated one. Only needed if startup reports duplicates. SQL backends only.")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
@@ -79,6 +105,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+
+	if *dedupePermissions {
+		runDedupePermissions(setupCtx, store)
+		return
+	}
 
 	if err := store.EnsureSchema(setupCtx); err != nil {
 		slog.Error("failed to prepare storage schema", "error", err)

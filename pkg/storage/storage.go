@@ -48,16 +48,11 @@ type PermissionStore interface {
 	SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error
 
 	// SetPermissionIfAbsent creates the permission only if it does not already
-	// exist. An existing row is never modified. This is what the fee fallback's
-	// default write-back needs: it must not overwrite a permission the recipient
-	// set in the meantime.
-	//
-	// Uniqueness of the box-wide row (sender == nil) is not guaranteed on every
-	// backend. mongostore has a unique index covering null and is atomic;
-	// sqlstore cannot use one, because a SQL UNIQUE constraint treats NULLs as
-	// distinct, so under PostgreSQL two concurrent calls can each insert a
-	// box-wide row. Either way the existing row is left alone — the failure mode
-	// is a duplicate, never a lost permission. See sqlstore.SetPermissionIfAbsent.
+	// exist. An existing row is never modified, and concurrent callers converge
+	// on a single row rather than each inserting their own. This is what the fee
+	// fallback's default write-back needs: it must not overwrite a permission
+	// the recipient set in the meantime, and it runs on the hot send path where
+	// callers do race.
 	SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error
 
 	// GetPermission returns (nil, nil) when no such permission exists.
