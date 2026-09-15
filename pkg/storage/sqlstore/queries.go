@@ -205,10 +205,13 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 // insert. Neither one modifies an existing row, so the outcome is a duplicate
 // box-wide permission rather than a lost one.
 //
-// Closing the gap needs an expression unique index over
-// (recipient, COALESCE(sender, ''), message_box), which cannot be created on a
-// database that already holds duplicates, so it wants a dedupe migration of
-// its own.
+// Closing the gap needs an expression unique index:
+//
+//	CREATE UNIQUE INDEX ... ON message_permissions(recipient, COALESCE(sender, ''), message_box)
+//
+// It cannot be created on a database that already holds duplicates, so it wants
+// a dedupe migration of its own. The index has to stay in a code block here:
+// gofmt rewrites a pair of apostrophes into a curly quote in doc comment prose.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := nowUTC()
 

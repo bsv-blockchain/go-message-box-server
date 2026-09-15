@@ -13,9 +13,16 @@ import (
 const smartQuotes = "\u2018\u2019\u201c\u201d"
 
 // TestNoSmartQuotesInGoSource guards against curly quotes reaching Go source.
-// They are invisible in review and silently corrupt the SQL and JSON snippets
-// comments use to document behaviour: an empty SQL string literal in a COALESCE
-// example once shipped as a single curly quote, which is not valid SQL.
+//
+// They are rarely typed by hand. gofmt puts them there: its doc comment
+// formatter applies the old godoc typographic convention, rewriting a pair of
+// backticks and a pair of apostrophes into curly quotes. So an empty SQL string
+// literal written correctly as two apostrophes in doc comment prose is silently
+// reformatted into one curly quote, which is not valid SQL, and the damage shows up in a
+// later commit rather than the one that wrote it.
+//
+// Indented code blocks and comments inside function bodies are left alone, so
+// that is where a snippet containing quotes belongs.
 func TestNoSmartQuotesInGoSource(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
