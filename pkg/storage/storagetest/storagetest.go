@@ -44,6 +44,25 @@ func testLifecycle(t *testing.T, newStore NewStoreFunc) {
 	})
 }
 
+// assertRecentUTC checks that a store-assigned timestamp is the instant it was
+// written. Asserting only that it is non-zero misses a backend that writes the
+// host's local wall clock into a zone-less column: the value round-trips and
+// formats cleanly, but is hours away from when it happened.
+func assertRecentUTC(t *testing.T, label string, got, before, after time.Time) {
+	t.Helper()
+
+	if got.IsZero() {
+		t.Errorf("%s is zero", label)
+		return
+	}
+	// A second of slack each side covers clock granularity and truncation.
+	lo, hi := before.Add(-time.Second), after.Add(time.Second)
+	if u := got.UTC(); u.Before(lo) || u.After(hi) {
+		t.Errorf("%s = %v (UTC %v), want between %v and %v; off by %v",
+			label, got, got.UTC(), lo, hi, u.Sub(before).Round(time.Second))
+	}
+}
+
 // --- messages ---------------------------------------------------------------
 
 func msg(id, recipient, box, sender, body string) storage.NewMessage {
@@ -86,7 +105,10 @@ func testMessages(t *testing.T, newStore NewStoreFunc) {
 	t.Run("RoundTrip", func(t *testing.T) {
 		s := newStore(t)
 		body := `{"message":{"text":"hi \"there\""},"payment":null}`
+
+		before := time.Now().UTC()
 		insert(t, s, msg("m1", alice, "inbox", bob, body))
+		after := time.Now().UTC()
 
 		got := list(t, s, alice, "inbox")
 		if len(got) != 1 {
@@ -101,12 +123,8 @@ func testMessages(t *testing.T, newStore NewStoreFunc) {
 		if got[0].Body != body {
 			t.Errorf("Body = %q, want %q", got[0].Body, body)
 		}
-		if got[0].CreatedAt.IsZero() {
-			t.Error("CreatedAt is zero")
-		}
-		if got[0].UpdatedAt.IsZero() {
-			t.Error("UpdatedAt is zero")
-		}
+		assertRecentUTC(t, "Message.CreatedAt", got[0].CreatedAt, before, after)
+		assertRecentUTC(t, "Message.UpdatedAt", got[0].UpdatedAt, before, after)
 	})
 
 	t.Run("DuplicateMessageID", func(t *testing.T) {
@@ -296,7 +314,10 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 
 	t.Run("BoxWideRoundTrip", func(t *testing.T) {
 		s := newStore(t)
+
+		before := time.Now().UTC()
 		setPerm(t, s, alice, nil, "inbox", 7)
+		after := time.Now().UTC()
 
 		p := getPerm(t, s, alice, nil, "inbox")
 		if p == nil {
@@ -314,9 +335,8 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		if p.RecipientFee != 7 {
 			t.Errorf("RecipientFee = %d, want 7", p.RecipientFee)
 		}
-		if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
-			t.Error("timestamps are zero")
-		}
+		assertRecentUTC(t, "Permission.CreatedAt", p.CreatedAt, before, after)
+		assertRecentUTC(t, "Permission.UpdatedAt", p.UpdatedAt, before, after)
 	})
 
 	t.Run("SenderSpecificRoundTrip", func(t *testing.T) {
@@ -611,12 +631,15 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 
 	t.Run("RoundTrip", func(t *testing.T) {
 		s := newStore(t)
+
+		before := time.Now().UTC()
 		register(t, s, storage.NewDevice{
 			IdentityKey: alice,
 			FCMToken:    "tok-1",
 			DeviceID:    ptr("dev-1"),
 			Platform:    ptr("ios"),
 		})
+		after := time.Now().UTC()
 
 		got := devices(t, s, alice, false)
 		if len(got) != 1 {
@@ -635,12 +658,13 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		if !d.Active {
 			t.Error("Active = false, want true on registration")
 		}
-		if d.CreatedAt.IsZero() || d.UpdatedAt.IsZero() {
-			t.Error("timestamps are zero")
-		}
+		assertRecentUTC(t, "Device.CreatedAt", d.CreatedAt, before, after)
+		assertRecentUTC(t, "Device.UpdatedAt", d.UpdatedAt, before, after)
 		// Registration sets last_used, matching the pre-refactor SQL.
 		if d.LastUsed == nil {
 			t.Error("LastUsed = nil, want it set at registration")
+		} else {
+			assertRecentUTC(t, "Device.LastUsed", *d.LastUsed, before, after)
 		}
 	})
 

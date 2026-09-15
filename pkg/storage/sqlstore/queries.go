@@ -9,12 +9,21 @@ import (
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
+// now is the timestamp to write. It is always UTC: PostgreSQL's TIMESTAMP
+// columns hold no zone and silently discard the offset lib/pq sends, so a
+// local-time write is read back as though it had been UTC all along — hours
+// away from when it happened. SQLite keeps the offset in text, which round
+// trips correctly but makes ORDER BY created_at a text comparison of
+// offset-bearing strings, so rows written either side of a DST change sort
+// wrong. Writing UTC fixes both.
+func nowUTC() time.Time { return time.Now().UTC() }
+
 // --- messages ---------------------------------------------------------------
 
 // ensureMessageBox creates the messageBox row if it doesn't exist and returns
 // its id. The id is a SQL implementation detail and never leaves this package.
 func (s *Store) ensureMessageBox(ctx context.Context, identityKey, boxType string) (int64, error) {
-	now := time.Now()
+	now := nowUTC()
 	_, err := s.exec(ctx,
 		`INSERT INTO messageBox (identityKey, type, created_at, updated_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (type, identityKey) DO NOTHING`,
@@ -47,7 +56,7 @@ func (s *Store) InsertMessage(ctx context.Context, m storage.NewMessage) error {
 		return err
 	}
 
-	now := time.Now()
+	now := nowUTC()
 	res, err := s.exec(ctx,
 		`INSERT INTO messages (messageId, messageBoxId, sender, recipient, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (messageId) DO NOTHING`,
@@ -152,7 +161,7 @@ func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, err
 
 // SetPermission implements storage.PermissionStore.
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
-	now := time.Now()
+	now := nowUTC()
 
 	// NULL != NULL in unique constraints for both SQLite and PostgreSQL, so we need special handling
 	if sender == nil {
@@ -197,11 +206,11 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 // box-wide permission rather than a lost one.
 //
 // Closing the gap needs an expression unique index over
-// (recipient, COALESCE(sender, ”), message_box), which cannot be created on a
+// (recipient, COALESCE(sender, ''), message_box), which cannot be created on a
 // database that already holds duplicates, so it wants a dedupe migration of
 // its own.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
-	now := time.Now()
+	now := nowUTC()
 
 	if sender == nil {
 		_, err := s.exec(ctx,
@@ -301,7 +310,7 @@ const deviceColumns = `identity_key, fcm_token, device_id, platform, active, cre
 
 // RegisterDevice implements storage.DeviceStore.
 func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) error {
-	now := time.Now()
+	now := nowUTC()
 	_, err := s.exec(ctx,
 		`INSERT INTO device_registrations (identity_key, fcm_token, device_id, platform, created_at, updated_at, active, last_used)
 		 VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
@@ -357,7 +366,7 @@ func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]st
 
 // UpdateDeviceLastUsed implements storage.DeviceStore.
 func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
-	now := time.Now()
+	now := nowUTC()
 	_, err := s.exec(ctx,
 		`UPDATE device_registrations SET last_used = ?, updated_at = ? WHERE fcm_token = ?`,
 		now, now, fcmToken,
@@ -369,7 +378,7 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.exec(ctx,
 		`UPDATE device_registrations SET active = FALSE, updated_at = ? WHERE fcm_token = ?`,
-		time.Now(), fcmToken,
+		nowUTC(), fcmToken,
 	)
 	return err
 }
