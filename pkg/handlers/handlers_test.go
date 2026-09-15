@@ -197,3 +197,28 @@ func TestFormatTime(t *testing.T) {
 		t.Errorf("same instant formatted differently: %q vs %q", got, formatTime(local))
 	}
 }
+
+// A permission set between recipientFee's lookups and its write must win.
+// Returning the smart default there would let a sender deliver against a block
+// the recipient had already stored.
+func TestRecipientFee_ConcurrentPermissionWins(t *testing.T) {
+	srv := setupTestServer(t)
+	ctx := context.Background()
+	store := srv.Store.(*fakeStore)
+
+	// Stand in for the racing writer: the block lands after both lookups miss,
+	// just before SetPermissionIfAbsent runs.
+	store.beforeSetIfAbsent = func() {
+		if err := srv.Store.SetPermission(ctx, mockIdentityKey, nil, "notifications", storage.FeeBlocked); err != nil {
+			t.Error(err)
+		}
+	}
+
+	fee, err := srv.recipientFee(ctx, mockIdentityKey, "02sender", "notifications")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fee != storage.FeeBlocked {
+		t.Errorf("fee = %d, want %d (the stored block, not the smart default)", fee, storage.FeeBlocked)
+	}
+}

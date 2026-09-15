@@ -62,6 +62,13 @@ backend with `STORAGE_BACKEND`:
 | PostgreSQL | `sql` | `DB_DRIVER=postgres`, `DB_SOURCE=postgres://...` |
 | MongoDB | `mongo` | `MONGO_URI`, `MONGO_DATABASE` |
 
+With Docker Compose:
+
+```bash
+docker compose up                                           # PostgreSQL
+STORAGE_BACKEND=mongo docker compose --profile mongo up      # MongoDB
+```
+
 The schema is created on startup and the data it holds is the same either way:
 
 - **message boxes** — Named message boxes per identity key
@@ -136,7 +143,10 @@ server: `messagebox.test.ts` drives the message lifecycle through
 permission and quote endpoints over `AuthFetch` directly (the client does not
 cover those routes). Both use an `@bsv/sdk` `ProtoWallet` for BRC-31 auth.
 
-Point them at a server on any backend — the responses are identical.
+Point them at a server on any backend. The responses are byte-identical, which
+is a property the conformance suite enforces rather than a hope: timestamps are
+written UTC so a non-UTC host cannot skew them, and the permission list is
+ordered bytewise so PostgreSQL's libc collation cannot reorder a page.
 
 ```bash
 # Terminal 1: Start the server

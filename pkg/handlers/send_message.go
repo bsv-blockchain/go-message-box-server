@@ -229,6 +229,14 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Past this point the payment has been internalized (InternalizeAction
+	// above), so the writes must not be tied to the request. net/http cancels
+	// r.Context() the moment the client disconnects, and both drivers check
+	// ctx.Err() before acquiring a connection, which would leave the fee taken
+	// and the message never stored. Before this package took a context at all,
+	// the write always completed once reached.
+	writeCtx := context.WithoutCancel(r.Context())
+
 	var results []SendMessageResult
 	for i, fr := range feeRows {
 		msgID := messageIDs[i]
@@ -259,7 +267,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			Sender:     senderKey,
 			Body:       string(bodyBytes),
 		}
-		if err := s.Store.InsertMessage(r.Context(), newMsg); err != nil {
+		if err := s.Store.InsertMessage(writeCtx, newMsg); err != nil {
 			if errors.Is(err, storage.ErrDuplicateMessage) {
 				logger.Error("duplicate message rejected", "messageId", msgID)
 				writeError(w, 400, "ERR_DUPLICATE_MESSAGE", "Duplicate message.")
@@ -271,14 +279,12 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if shouldUseFCMDelivery(boxType) {
-			// r.Context() is cancelled the moment the response is written, so the
-			// detached send is decoupled from it while keeping request values.
-			// It carries no overall deadline on purpose: SendFCMNotification
-			// bounds each device individually, and a shared budget here would
-			// starve the tail of a long device list.
-			fcmCtx := context.WithoutCancel(r.Context())
+			// Detached from the request for the same reason as the write above.
+			// SendFCMNotification bounds every call it makes, so this carries no
+			// overall deadline: a shared budget would starve the tail of a long
+			// device list.
 			go func(recipient, messageID string) {
-				firebase.SendFCMNotification(fcmCtx, s.Store, recipient, firebase.FCMPayload{
+				firebase.SendFCMNotification(writeCtx, s.Store, recipient, firebase.FCMPayload{
 					Title:     "New Message",
 					MessageID: messageID,
 				})

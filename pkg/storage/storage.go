@@ -65,7 +65,7 @@ type PermissionStore interface {
 
 	// ListPermissions returns one page plus the unpaginated total, ordered by
 	// MessageBox ascending, box-wide rows first, Sender ascending, then CreatedAt
-	// per q.Order.
+	// per q.Order. It returns ErrInvalidQuery if q.Validate does.
 	ListPermissions(ctx context.Context, q PermissionQuery) (PermissionPage, error)
 }
 

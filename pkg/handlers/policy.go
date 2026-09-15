@@ -54,6 +54,16 @@ func (s *Server) recipientFee(ctx context.Context, recipient, sender, messageBox
 	if err := s.Store.SetPermissionIfAbsent(ctx, recipient, nil, messageBox, fee); err != nil {
 		return 0, err
 	}
+
+	// Re-read rather than returning the default we tried to write. If a
+	// permission did land in that window, SetPermissionIfAbsent correctly left it
+	// alone, and returning the default here would let the caller deliver against
+	// a block the recipient had already set.
+	if p, err := s.Store.GetPermission(ctx, recipient, nil, messageBox); err != nil {
+		return 0, err
+	} else if p != nil {
+		return p.RecipientFee, nil
+	}
 	return fee, nil
 }
 

@@ -34,9 +34,15 @@ type Store struct {
 	db     *mongo.Database
 }
 
+// opTimeout bounds every operation the driver performs. Without it the driver
+// has no per-operation deadline at all: socket deadlines come only from the
+// context, so a server that accepts a connection and then stops answering
+// parks the caller for good.
+const opTimeout = 10 * time.Second
+
 // New connects to MongoDB and verifies the connection.
 func New(ctx context.Context, uri, database string) (*Store, error) {
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetTimeout(opTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to mongo: %w", err)
 	}
@@ -47,8 +53,14 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 	return &Store{client: client, db: client.Database(database)}, nil
 }
 
-// Close disconnects the client.
-func (s *Store) Close() error { return s.client.Disconnect(context.Background()) }
+// Close disconnects the client. Disconnect runs endSessions on the wire first,
+// so it gets a deadline of its own: this is on the shutdown path, where a
+// stalled server must not stop the process exiting.
+func (s *Store) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	return s.client.Disconnect(ctx)
+}
 
 // now returns the current time at the precision BSON can store, so a value
 // written here compares equal to the one read back.
@@ -58,17 +70,30 @@ func now() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
 func (s *Store) EnsureSchema(ctx context.Context) error {
 	indexes := map[string][]mongo.IndexModel{
 		messagesColl: {
+			// ListMessages: equality on recipient and messageBox, then the sort.
 			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}},
 		},
 		permissionsColl: {
+			// Uniqueness, including the box-wide row: Mongo indexes null as a
+			// value, so this covers a nil sender too.
 			{
 				Keys:    bson.D{{Key: "recipient", Value: 1}, {Key: "sender", Value: 1}, {Key: "messageBox", Value: 1}},
 				Options: options.Index().SetUnique(true),
 			},
-			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "createdAt", Value: 1}}},
+			// ListPermissions sorts on messageBox, sender, createdAt after an
+			// equality match on recipient. The sort keys have to appear in that
+			// order after the equality prefix or the whole page is sorted in
+			// memory, and one index per sort direction is needed because a
+			// compound index is only walkable forwards or fully reversed.
+			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: 1}}},
+			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: -1}}},
 		},
 		devicesColl: {
-			{Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "active", Value: 1}, {Key: "updatedAt", Value: -1}}},
+			// Serves both device queries: ListDevices matches identityKey and
+			// sorts on updatedAt, and ListActiveDevices adds an equality on
+			// active, which a later index field does not disturb. Putting active
+			// between the two would push ListDevices into an in-memory sort.
+			{Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "updatedAt", Value: -1}, {Key: "active", Value: 1}}},
 		},
 	}
 
@@ -267,6 +292,10 @@ func toPermission(d permissionDoc) storage.Permission {
 
 // ListPermissions implements storage.PermissionStore.
 func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) (storage.PermissionPage, error) {
+	if err := q.Validate(); err != nil {
+		return storage.PermissionPage{}, err
+	}
+
 	filter := bson.M{"recipient": q.Recipient}
 	if q.MessageBox != nil {
 		filter["messageBox"] = *q.MessageBox
@@ -277,12 +306,6 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 	total, err := coll.CountDocuments(ctx, filter)
 	if err != nil {
 		return storage.PermissionPage{}, err
-	}
-
-	// MongoDB reads a limit of 0 as "unlimited", where SQL's LIMIT 0 returns
-	// nothing. The contract follows SQL.
-	if q.Limit <= 0 {
-		return storage.PermissionPage{Total: int(total)}, nil
 	}
 
 	// BSON's type ordering already sorts null before strings, so sorting on

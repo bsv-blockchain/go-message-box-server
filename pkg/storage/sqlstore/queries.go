@@ -144,6 +144,22 @@ func (s *Store) GetServerDeliveryFee(ctx context.Context, messageBox string) (in
 
 // --- permissions ------------------------------------------------------------
 
+// textCollation is appended to the text keys of the ListPermissions ORDER BY.
+//
+// Every other backend compares strings bytewise: SQLite's default is BINARY,
+// mongostore relies on BSON's binary compare, and the handler fake uses Go's <.
+// PostgreSQL follows its database collation, which for the usual libc
+// en_US.UTF-8 ignores case and punctuation, so a page of client-named message
+// boxes comes back in a different order and breaks at a different boundary.
+// Forcing "C" here rather than in the DDL keeps existing databases working
+// without a table rewrite.
+func (s *Store) textCollation() string {
+	if s.driver == "postgres" {
+		return ` COLLATE "C"`
+	}
+	return ""
+}
+
 const permissionColumns = `id, recipient, sender, message_box, recipient_fee, created_at, updated_at`
 
 // scanPermission reads one permission row. The id column is scanned and
@@ -264,6 +280,10 @@ func (s *Store) GetPermission(ctx context.Context, recipient string, sender *str
 
 // ListPermissions implements storage.PermissionStore.
 func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) (storage.PermissionPage, error) {
+	if err := q.Validate(); err != nil {
+		return storage.PermissionPage{}, err
+	}
+
 	var page storage.PermissionPage
 
 	where := ` WHERE recipient = ?`
@@ -283,8 +303,12 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 	if q.Order == storage.SortAsc {
 		direction = "ASC"
 	}
+	collate := s.textCollation()
 	query := `SELECT ` + permissionColumns + ` FROM message_permissions` + where +
-		` ORDER BY message_box ASC, CASE WHEN sender IS NULL THEN 0 ELSE 1 END, sender ASC, created_at ` + direction +
+		` ORDER BY message_box` + collate + ` ASC,` +
+		` CASE WHEN sender IS NULL THEN 0 ELSE 1 END,` +
+		` sender` + collate + ` ASC,` +
+		` created_at ` + direction +
 		` LIMIT ? OFFSET ?`
 	args = append(args, q.Limit, q.Offset)
 

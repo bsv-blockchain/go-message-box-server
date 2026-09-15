@@ -106,12 +106,16 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+// messagesIndex covers ListMessages: equality on recipient and messageBoxId,
+// then the ORDER BY keys. Stopping at the two equality columns leaves the sort
+// in place (EXPLAIN QUERY PLAN: USE TEMP B-TREE FOR ORDER BY).
+const messagesIndexColumns = `messages(recipient, messageBoxId, created_at, messageId)`
+
 func commonMigrations() []string {
 	return []string{
 		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('notifications', 10) ON CONFLICT DO NOTHING`,
 		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('inbox', 0) ON CONFLICT DO NOTHING`,
 		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('payment_inbox', 0) ON CONFLICT DO NOTHING`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_recipient_box ON messages(recipient, messageBoxId)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient ON message_permissions(recipient)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient_box ON message_permissions(recipient, message_box)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_box ON message_permissions(message_box)`,
@@ -120,6 +124,10 @@ func commonMigrations() []string {
 		`CREATE INDEX IF NOT EXISTS idx_device_registrations_identity_active ON device_registrations(identity_key, active)`,
 	}
 }
+
+// sqliteMessagesIndex builds in one go. SQLite serialises writers anyway, so
+// there is no rolling-deploy window to protect.
+const sqliteMessagesIndex = `CREATE INDEX IF NOT EXISTS idx_messages_recipient_box ON ` + messagesIndexColumns
 
 func sqliteMigrations() []string {
 	tables := []string{
@@ -169,7 +177,31 @@ func sqliteMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	return append(tables, commonMigrations()...)
+	return append(append(tables, sqliteMessagesIndex), commonMigrations()...)
+}
+
+// postgresMessagesIndex builds without blocking writers. A plain CREATE INDEX
+// holds a SHARE lock on messages for the whole build, so during a rolling
+// deploy every sendMessage INSERT and acknowledgeMessage DELETE on the old
+// replicas waits while the new instance sits before ListenAndServe. Each
+// migration runs in its own autocommit ExecContext, which is what CONCURRENTLY
+// requires.
+//
+// IF NOT EXISTS would happily skip an invalid leftover from a build that failed
+// part way, so the invalid one is dropped first; CONCURRENTLY cannot run inside
+// the DO block, hence the two statements.
+var postgresMessagesIndex = []string{
+	`DO $$
+	 BEGIN
+	   IF EXISTS (
+	     SELECT 1 FROM pg_class c
+	     JOIN pg_index i ON i.indexrelid = c.oid
+	     WHERE c.relname = 'idx_messages_recipient_box' AND NOT i.indisvalid
+	   ) THEN
+	     EXECUTE 'DROP INDEX idx_messages_recipient_box';
+	   END IF;
+	 END $$`,
+	`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_recipient_box ON ` + messagesIndexColumns,
 }
 
 func postgresMigrations() []string {
@@ -220,7 +252,8 @@ func postgresMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	return append(tables, commonMigrations()...)
+	migrations := append(tables, postgresMessagesIndex...)
+	return append(migrations, commonMigrations()...)
 }
 
 // compile-time assertion that Store satisfies the contract.

@@ -41,13 +41,18 @@ import (
 // @name x-bsv-auth-identity-key
 // @description BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-* headers (identity-key, nonce, signature, etc.)
 
+// storeSetupTimeout bounds opening the backend and preparing its schema, so a
+// host that accepts connections without answering fails with a message instead
+// of hanging before ListenAndServe.
+const storeSetupTimeout = 15 * time.Second
+
 // openStore builds the storage backend selected by STORAGE_BACKEND.
-func openStore(cfg *config.Config) (mbstorage.Store, error) {
+func openStore(ctx context.Context, cfg *config.Config) (mbstorage.Store, error) {
 	switch cfg.StorageBackend {
 	case "sql", "":
 		return sqlstore.New(cfg.DBDriver, cfg.DBSource)
 	case "mongo":
-		return mongostore.New(context.Background(), cfg.MongoURI, cfg.MongoDatabase)
+		return mongostore.New(ctx, cfg.MongoURI, cfg.MongoDatabase)
 	default:
 		return nil, fmt.Errorf("unknown STORAGE_BACKEND %q (want \"sql\" or \"mongo\")", cfg.StorageBackend)
 	}
@@ -65,14 +70,17 @@ func main() {
 	}
 
 	// Open the storage backend and bring its schema up to date
-	store, err := openStore(cfg)
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), storeSetupTimeout)
+	defer cancelSetup()
+
+	store, err := openStore(setupCtx, cfg)
 	if err != nil {
 		slog.Error("failed to open storage backend", "backend", cfg.StorageBackend, "error", err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
-	if err := store.EnsureSchema(context.Background()); err != nil {
+	if err := store.EnsureSchema(setupCtx); err != nil {
 		slog.Error("failed to prepare storage schema", "error", err)
 		os.Exit(1)
 	}

@@ -21,6 +21,10 @@ type fakeStore struct {
 	perms    map[permKey]*storage.Permission
 	devices  map[string]*storage.Device
 	fees     map[string]int
+
+	// beforeSetIfAbsent, when set, runs at the start of SetPermissionIfAbsent so
+	// a test can land a write in the window the fee fallback races against.
+	beforeSetIfAbsent func()
 }
 
 type fakeMessage struct {
@@ -38,7 +42,10 @@ type permKey struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		clock:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		// Real time, so the conformance suite's recency assertions hold, but
+		// advanced by hand on every write so ordering stays deterministic
+		// without sleeping.
+		clock:    time.Now().UTC(),
 		messages: map[string]*fakeMessage{},
 		perms:    map[permKey]*storage.Permission{},
 		devices:  map[string]*storage.Device{},
@@ -143,12 +150,40 @@ func (f *fakeStore) SetPermission(_ context.Context, recipient string, sender *s
 		return nil
 	}
 
+	f.perms[k] = f.newPermissionLocked(recipient, sender, messageBox, recipientFee)
+	return nil
+}
+
+func (f *fakeStore) SetPermissionIfAbsent(_ context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	if f.beforeSetIfAbsent != nil {
+		hook := f.beforeSetIfAbsent
+		f.beforeSetIfAbsent = nil
+		hook()
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// One lock across check and insert. Releasing it in between, or delegating
+	// to SetPermission, would let a concurrent SetPermission land in the gap and
+	// then be overwritten — which neither real backend does.
+	k := makePermKey(recipient, sender, messageBox)
+	if _, exists := f.perms[k]; exists {
+		return nil
+	}
+	f.perms[k] = f.newPermissionLocked(recipient, sender, messageBox, recipientFee)
+	return nil
+}
+
+// newPermissionLocked builds a permission record. The caller holds f.mu.
+func (f *fakeStore) newPermissionLocked(recipient string, sender *string, messageBox string, recipientFee int) *storage.Permission {
+	ts := f.tick()
 	var senderCopy *string
 	if sender != nil {
 		v := *sender
 		senderCopy = &v
 	}
-	f.perms[k] = &storage.Permission{
+	return &storage.Permission{
 		Recipient:    recipient,
 		Sender:       senderCopy,
 		MessageBox:   messageBox,
@@ -156,17 +191,6 @@ func (f *fakeStore) SetPermission(_ context.Context, recipient string, sender *s
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}
-	return nil
-}
-
-func (f *fakeStore) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
-	f.mu.Lock()
-	_, exists := f.perms[makePermKey(recipient, sender, messageBox)]
-	f.mu.Unlock()
-	if exists {
-		return nil
-	}
-	return f.SetPermission(ctx, recipient, sender, messageBox, recipientFee)
 }
 
 func (f *fakeStore) GetPermission(_ context.Context, recipient string, sender *string, messageBox string) (*storage.Permission, error) {
@@ -182,6 +206,10 @@ func (f *fakeStore) GetPermission(_ context.Context, recipient string, sender *s
 }
 
 func (f *fakeStore) ListPermissions(_ context.Context, q storage.PermissionQuery) (storage.PermissionPage, error) {
+	if err := q.Validate(); err != nil {
+		return storage.PermissionPage{}, err
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

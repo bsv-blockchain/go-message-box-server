@@ -3,6 +3,7 @@ package firebase
 import (
 	"context"
 	"testing"
+	"time"
 
 	"firebase.google.com/go/v4/messaging"
 
@@ -82,5 +83,50 @@ func TestSendFCMNotification_ListError(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("Error is empty, want the lookup failure described")
+	}
+}
+
+// blockingDeviceStore never returns until its context is done, standing in for
+// a lock held on device_registrations or an unresponsive Mongo primary.
+type blockingDeviceStore struct {
+	fakeDeviceStore
+	listWaited chan time.Duration
+}
+
+func (b *blockingDeviceStore) ListActiveDevices(ctx context.Context, _ string) ([]storage.Device, error) {
+	start := time.Now()
+	<-ctx.Done()
+	b.listWaited <- time.Since(start)
+	return nil, ctx.Err()
+}
+
+// The caller detaches this work from the request and passes a context with no
+// deadline, so SendFCMNotification has to impose its own or the goroutine parks
+// forever holding a pool connection.
+func TestSendFCMNotification_BoundsStoreCallsWithoutACallerDeadline(t *testing.T) {
+	withClient(t)
+
+	original := storeCallTimeout
+	storeCallTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { storeCallTimeout = original })
+
+	store := &blockingDeviceStore{listWaited: make(chan time.Duration, 1)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// context.Background() has no deadline, exactly as the handler passes it.
+		SendFCMNotification(context.Background(), store, "02recipient", FCMPayload{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendFCMNotification did not return: the store call is unbounded")
+	}
+
+	waited := <-store.listWaited
+	if waited > time.Second {
+		t.Errorf("store call waited %v, want it bounded near %v", waited, storeCallTimeout)
 	}
 }

@@ -15,8 +15,8 @@ services:
       timeout: 3s
       retries: 5
 
-  # Only needed with STORAGE_BACKEND=mongo. Start it with:
-  #   docker compose --profile mongo up
+  # Only started with the mongo profile:
+  #   STORAGE_BACKEND=mongo docker compose --profile mongo up
   mongo:
     profiles: ["mongo"]
     image: mongo:8.2
@@ -38,17 +38,25 @@ services:
       NODE_ENV: development
       PORT: 8080
       SERVER_PRIVATE_KEY: 4f1f715fd10bfa3549d3caf487a4be95523d7bcb8f82abe1a3c91494a09c05f5
-      STORAGE_BACKEND: sql
-      DB_DRIVER: postgres
+      # STORAGE_BACKEND=mongo docker compose --profile mongo up
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-sql}
+      DB_DRIVER: ${DB_DRIVER:-postgres}
       DB_SOURCE: postgres://messagebox:messagebox@postgres:5432/messagebox?sslmode=disable
-      # To use MongoDB instead, set STORAGE_BACKEND: mongo and point these at the mongo service:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DATABASE: messagebox
       BSV_NETWORK: mainnet
       WALLET_STORAGE_URL: https://store-us-1.bsvb.tech
     depends_on:
+      # Both are optional so either backend can run alone: a hard dependency on
+      # mongo would break a profile-less `docker compose up`, since compose
+      # rejects depending on a profile-disabled service. required:false needs
+      # Compose v2.20+.
       postgres:
         condition: service_healthy
+        required: false
+      mongo:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
 
 volumes:

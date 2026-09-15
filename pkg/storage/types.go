@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // NewMessage is a message to be stored. MessageBox is the box type; there is no
 // numeric box id in the contract.
@@ -42,12 +45,30 @@ const (
 )
 
 // PermissionQuery selects and pages a recipient's permissions.
+//
+// Limit must be at least 1 and Offset must not be negative; anything else is
+// ErrInvalidQuery. The underlying drivers disagree wildly here — a negative
+// limit means "unlimited" to SQLite, is an error to PostgreSQL, and means
+// "unlimited" to MongoDB — so the contract rejects it rather than letting one
+// backend's quirk leak through.
 type PermissionQuery struct {
 	Recipient  string
 	MessageBox *string // nil means all boxes
 	Limit      int
 	Offset     int
 	Order      SortOrder // applied to CreatedAt
+}
+
+// Validate reports whether the query is well formed. Every implementation calls
+// it before touching the backend, so they all reject the same inputs.
+func (q PermissionQuery) Validate() error {
+	if q.Limit < 1 {
+		return fmt.Errorf("%w: Limit is %d, want at least 1", ErrInvalidQuery, q.Limit)
+	}
+	if q.Offset < 0 {
+		return fmt.Errorf("%w: Offset is %d, want zero or more", ErrInvalidQuery, q.Offset)
+	}
+	return nil
 }
 
 // PermissionPage is one page of permissions plus the unpaginated total.

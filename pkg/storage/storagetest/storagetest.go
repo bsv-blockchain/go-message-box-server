@@ -44,6 +44,13 @@ func testLifecycle(t *testing.T, newStore NewStoreFunc) {
 	})
 }
 
+// separateWrites pauses long enough for the next write to land on a distinct
+// stored timestamp. MongoDB's BSON datetime is millisecond-precision, so
+// without this two writes in the same millisecond tie and the order falls to
+// the contract's secondary key, which is not what an ordering test means to
+// pin. The SQL backends keep nanoseconds and do not need it.
+func separateWrites() { time.Sleep(2 * time.Millisecond) }
+
 // assertRecentUTC checks that a store-assigned timestamp is the instant it was
 // written. Asserting only that it is non-zero misses a backend that writes the
 // host's local wall clock into a zone-less column: the value round-trips and
@@ -183,13 +190,18 @@ func testMessages(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
+	// Inserted out of lexical order on purpose: with m1, m2, m3 a backend that
+	// sorted by messageId alone would pass and still be wrong.
 	t.Run("DeterministicOrder", func(t *testing.T) {
 		s := newStore(t)
-		for _, id := range []string{"m1", "m2", "m3"} {
+		for i, id := range []string{"m3", "m1", "m2"} {
+			if i > 0 {
+				separateWrites()
+			}
 			insert(t, s, msg(id, alice, "inbox", bob, id))
 		}
 		got := messageIDs(list(t, s, alice, "inbox"))
-		want := []string{"m1", "m2", "m3"}
+		want := []string{"m3", "m1", "m2"}
 		if len(got) != len(want) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
@@ -392,6 +404,43 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
+	// Setting the same key twice is the upsert path. Every other nil-sender
+	// subtest writes a given key once, so a backend that always inserted, or
+	// never bumped UpdatedAt, passed.
+	t.Run("UpsertSameKeyTwice", func(t *testing.T) {
+		for _, sender := range []*string{nil, ptr(bob)} {
+			s := newStore(t)
+
+			setPerm(t, s, alice, sender, "inbox", 1)
+			before := getPerm(t, s, alice, sender, "inbox")
+
+			separateWrites()
+			setPerm(t, s, alice, sender, "inbox", 42)
+			after := getPerm(t, s, alice, sender, "inbox")
+
+			if after == nil {
+				t.Fatalf("sender=%v: permission disappeared", sender)
+			}
+			if after.RecipientFee != 42 {
+				t.Errorf("sender=%v: RecipientFee = %d, want 42", sender, after.RecipientFee)
+			}
+			if !after.CreatedAt.Equal(before.CreatedAt) {
+				t.Errorf("sender=%v: CreatedAt moved %v -> %v", sender, before.CreatedAt, after.CreatedAt)
+			}
+			if !after.UpdatedAt.After(before.UpdatedAt) {
+				t.Errorf("sender=%v: UpdatedAt = %v, want strictly after %v", sender, after.UpdatedAt, before.UpdatedAt)
+			}
+
+			page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice, Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.Total != 1 {
+				t.Errorf("sender=%v: Total = %d, want 1 (upsert must not duplicate)", sender, page.Total)
+			}
+		}
+	})
+
 	t.Run("BoxWideAndSenderSpecificCoexist", func(t *testing.T) {
 		s := newStore(t)
 		setPerm(t, s, alice, nil, "inbox", 1)
@@ -480,6 +529,34 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		"inbox/*", "inbox/" + bob, "inbox/" + carol,
 		"notifications/*", "notifications/" + bob, "notifications/" + carol,
 	}
+
+	// Box names come from clients, so they are not all lowercase. Ordering must
+	// be bytewise on every backend: PostgreSQL's usual libc collation would put
+	// "Inbox" next to "inbox" instead of ahead of it, changing both the page
+	// contents and where it breaks.
+	t.Run("ListOrderIsBytewise", func(t *testing.T) {
+		s := newStore(t)
+		boxes := []string{"inbox", "Inbox", "Notifications", "inbox_2", "inbox2"}
+		for _, box := range boxes {
+			setPerm(t, s, alice, nil, box, 0)
+		}
+
+		page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice, Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Byte order: uppercase (0x49, 0x4e) before lowercase (0x69), then the
+		// shared "inbox" prefix broken by nothing, '2' (0x32) and '_' (0x5f).
+		want := []string{"Inbox", "Notifications", "inbox", "inbox2", "inbox_2"}
+		var got []string
+		for _, p := range page.Items {
+			got = append(got, p.MessageBox)
+		}
+		if !equalStrings(got, want) {
+			t.Errorf("order = %v, want %v (bytewise)", got, want)
+		}
+	})
 
 	t.Run("ListOrderAndTotal", func(t *testing.T) {
 		for _, order := range []storage.SortOrder{storage.SortAsc, storage.SortDesc} {
@@ -570,21 +647,27 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
-	// A zero Limit means "no rows", as LIMIT 0 does in SQL. MongoDB reads limit
-	// 0 as "unlimited", so this pins the contract for every backend.
-	t.Run("ZeroLimit", func(t *testing.T) {
+	// Paging arguments are validated by the contract rather than passed to the
+	// driver, because the drivers disagree: a negative limit is "unlimited" to
+	// SQLite and MongoDB and an error to PostgreSQL, and a zero limit is "no
+	// rows" to SQL and "unlimited" to MongoDB.
+	t.Run("RejectsInvalidPaging", func(t *testing.T) {
 		s := newStore(t)
 		seedOrdered(t, s)
 
-		page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice})
-		if err != nil {
-			t.Fatalf("ListPermissions: %v", err)
-		}
-		if len(page.Items) != 0 {
-			t.Errorf("got %d items, want 0", len(page.Items))
-		}
-		if page.Total != 6 {
-			t.Errorf("Total = %d, want 6", page.Total)
+		for _, q := range []storage.PermissionQuery{
+			{Recipient: alice, Limit: 0},
+			{Recipient: alice, Limit: -1},
+			{Recipient: alice, Limit: 10, Offset: -1},
+		} {
+			page, err := s.ListPermissions(ctx, q)
+			if !errors.Is(err, storage.ErrInvalidQuery) {
+				t.Errorf("ListPermissions(%+v) error = %v, want ErrInvalidQuery", q, err)
+			}
+			if len(page.Items) != 0 || page.Total != 0 {
+				t.Errorf("ListPermissions(%+v) returned %d items / total %d, want an empty page",
+					q, len(page.Items), page.Total)
+			}
 		}
 	})
 
@@ -689,6 +772,9 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		register(t, s, storage.NewDevice{
 			IdentityKey: alice, FCMToken: "tok-1", DeviceID: ptr("dev-1"), Platform: ptr("ios"),
 		})
+		first := devices(t, s, alice, false)[0]
+
+		separateWrites()
 		register(t, s, storage.NewDevice{
 			IdentityKey: alice, FCMToken: "tok-1", DeviceID: ptr("dev-2"), Platform: ptr("android"),
 		})
@@ -703,6 +789,12 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		if got[0].Platform == nil || *got[0].Platform != "android" {
 			t.Errorf("Platform = %v, want android", got[0].Platform)
 		}
+		if !got[0].CreatedAt.Equal(first.CreatedAt) {
+			t.Errorf("CreatedAt moved on re-registration: %v -> %v", first.CreatedAt, got[0].CreatedAt)
+		}
+		if got[0].UpdatedAt.Before(first.UpdatedAt) {
+			t.Errorf("UpdatedAt went backwards: %v -> %v", first.UpdatedAt, got[0].UpdatedAt)
+		}
 	})
 
 	t.Run("TwoTokens", func(t *testing.T) {
@@ -716,6 +808,33 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		}
 		if got := devices(t, s, bob, false); len(got) != 1 {
 			t.Errorf("bob has %d devices, want 1", len(got))
+		}
+	})
+
+	// ListDevices is contracted to return the most recently updated first.
+	// Nothing asserted that, so a backend with no ORDER BY at all passed.
+	t.Run("ListOrderIsMostRecentlyUpdatedFirst", func(t *testing.T) {
+		s := newStore(t)
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		separateWrites()
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-2"})
+
+		got := devices(t, s, alice, false)
+		if len(got) != 2 {
+			t.Fatalf("got %d devices, want 2", len(got))
+		}
+		if got[0].FCMToken != "tok-2" || got[1].FCMToken != "tok-1" {
+			t.Fatalf("order = [%s %s], want [tok-2 tok-1]", got[0].FCMToken, got[1].FCMToken)
+		}
+
+		// Touching the older device must move it to the front.
+		separateWrites()
+		if err := s.UpdateDeviceLastUsed(ctx, "tok-1"); err != nil {
+			t.Fatal(err)
+		}
+		got = devices(t, s, alice, false)
+		if got[0].FCMToken != "tok-1" || got[1].FCMToken != "tok-2" {
+			t.Errorf("order after touching tok-1 = [%s %s], want [tok-1 tok-2]", got[0].FCMToken, got[1].FCMToken)
 		}
 	})
 
