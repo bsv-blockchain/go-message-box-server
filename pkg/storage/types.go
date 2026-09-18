@@ -96,3 +96,19 @@ type Device struct {
 	UpdatedAt   time.Time
 	LastUsed    *time.Time
 }
+
+// DeliveryFee is the server's delivery fee for one message box.
+type DeliveryFee struct {
+	MessageBox string
+	Fee        int
+}
+
+// DefaultDeliveryFees returns the fees EnsureSchema seeds on first boot. A
+// backend must not overwrite a value an operator has since changed.
+func DefaultDeliveryFees() []DeliveryFee {
+	return []DeliveryFee{
+		{MessageBox: "notifications", Fee: 10},
+		{MessageBox: "inbox", Fee: 0},
+		{MessageBox: "payment_inbox", Fee: 0},
+	}
+}

@@ -105,14 +105,14 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 
 	// Seed the default fees without clobbering values an operator has changed,
 	// matching the SQL migration's ON CONFLICT DO NOTHING.
-	for box, fee := range map[string]int{"notifications": 10, "inbox": 0, "payment_inbox": 0} {
+	for _, f := range storage.DefaultDeliveryFees() {
 		_, err := s.db.Collection(feesColl).UpdateOne(ctx,
-			bson.M{"_id": box},
-			bson.M{"$setOnInsert": bson.M{"deliveryFee": fee}},
+			bson.M{"_id": f.MessageBox},
+			bson.M{"$setOnInsert": bson.M{"deliveryFee": f.Fee}},
 			options.UpdateOne().SetUpsert(true),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to seed delivery fee for %s: %w", box, err)
+			return fmt.Errorf("failed to seed delivery fee for %s: %w", f.MessageBox, err)
 		}
 	}
 	return nil
@@ -234,13 +234,19 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 			"recipient": recipient, "sender": sender, "messageBox": messageBox, "createdAt": ts,
 		},
 	}
-	opts := options.UpdateOne().SetUpsert(true)
+	upsert := func() error {
+		_, err := s.db.Collection(permissionsColl).UpdateOne(ctx,
+			permissionKey(recipient, sender, messageBox), update, options.UpdateOne().SetUpsert(true))
+		return err
+	}
 
-	_, err := s.db.Collection(permissionsColl).UpdateOne(ctx, permissionKey(recipient, sender, messageBox), update, opts)
+	err := upsert()
 	if mongo.IsDuplicateKeyError(err) {
 		// Two upserts raced to insert the same key; the row now exists, so the
-		// same statement succeeds as a plain update.
-		_, err = s.db.Collection(permissionsColl).UpdateOne(ctx, permissionKey(recipient, sender, messageBox), update, opts)
+		// same statement succeeds as a plain update. MongoDB 4.2+ retries this
+		// server-side and never surfaces the error; wire-compatible servers
+		// that are not MongoDB may.
+		err = upsert()
 	}
 	return err
 }

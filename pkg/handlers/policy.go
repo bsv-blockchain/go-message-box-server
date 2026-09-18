@@ -67,6 +67,25 @@ func (s *Server) recipientFee(ctx context.Context, recipient, sender, messageBox
 	return fee, nil
 }
 
+// Permission statuses reported by the permission and quote endpoints.
+const (
+	statusAlwaysAllow     = "always_allow"
+	statusBlocked         = "blocked"
+	statusPaymentRequired = "payment_required"
+)
+
+// feeStatus maps a recipient fee onto its API status.
+func feeStatus(recipientFee int) string {
+	switch {
+	case recipientFee == storage.FeeBlocked:
+		return statusBlocked
+	case recipientFee > 0:
+		return statusPaymentRequired
+	default:
+		return statusAlwaysAllow
+	}
+}
+
 // sortOrder maps the createdAtOrder query parameter onto the storage enum.
 // Anything other than "asc" is descending, matching the previous behaviour.
 func sortOrder(param string) storage.SortOrder {

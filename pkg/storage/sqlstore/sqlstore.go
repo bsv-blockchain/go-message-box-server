@@ -103,6 +103,17 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("migration failed: %s: %w", m[:min(60, len(m))], err)
 		}
 	}
+
+	// Seed the default fees without clobbering values an operator has changed.
+	for _, f := range storage.DefaultDeliveryFees() {
+		_, err := s.exec(ctx,
+			`INSERT INTO server_fees (message_box, delivery_fee) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+			f.MessageBox, f.Fee,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to seed delivery fee for %s: %w", f.MessageBox, err)
+		}
+	}
 	return nil
 }
 
@@ -113,9 +124,6 @@ const messagesIndexColumns = `messages(recipient, messageBoxId, created_at, mess
 
 func commonMigrations() []string {
 	return []string{
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('notifications', 10) ON CONFLICT DO NOTHING`,
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('inbox', 0) ON CONFLICT DO NOTHING`,
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('payment_inbox', 0) ON CONFLICT DO NOTHING`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient ON message_permissions(recipient)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient_box ON message_permissions(recipient, message_box)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_box ON message_permissions(message_box)`,
