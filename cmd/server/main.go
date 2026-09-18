@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +47,12 @@ import (
 // of hanging before ListenAndServe.
 const storeSetupTimeout = 15 * time.Second
 
+// isLocalHost reports whether host names the loopback interface, where http is
+// the normal choice and no warning is due.
+func isLocalHost(host string) bool {
+	return strings.Contains(host, "localhost") || strings.Contains(host, "127.0.0.1") || strings.Contains(host, "[::1]")
+}
+
 // openStore builds the storage backend selected by STORAGE_BACKEND.
 func openStore(ctx context.Context, cfg *config.Config) (mbstorage.Store, error) {
 	switch cfg.StorageBackend {
@@ -69,6 +76,15 @@ func main() {
 		logger.Enable()
 	}
 
+	// The handle registry exists only on the Mongo backend. This is knowable
+	// from the config alone, so refuse before anything is opened: a
+	// misconfigured process in a crash loop should leave no database file, no
+	// wallet storage and no goroutine behind.
+	if err := checkLookupBackend(cfg); err != nil {
+		slog.Error("cannot serve the paymail profile lookup", "error", err)
+		os.Exit(1)
+	}
+
 	// Open the storage backend and bring its schema up to date
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), storeSetupTimeout)
 	defer cancelSetup()
@@ -82,6 +98,16 @@ func main() {
 
 	if err := store.EnsureSchema(setupCtx); err != nil {
 		slog.Error("failed to prepare storage schema", "error", err)
+		os.Exit(1)
+	}
+
+	// Take the registry out of the opened store, still before the wallet is
+	// created so nothing is written or started if the backend turns out not to
+	// carry one. As with the fatal paths above, os.Exit skips the deferred
+	// Close: the process is dying before it ever listened.
+	registry, err := lookupRegistry(cfg, store)
+	if err != nil {
+		slog.Error("cannot serve the paymail profile lookup", "error", err)
 		os.Exit(1)
 	}
 
@@ -122,6 +148,11 @@ func main() {
 	mux.HandleFunc("GET "+prefix+"/permissions/list", srv.ListPermissions)
 	mux.HandleFunc("GET "+prefix+"/permissions/quote", srv.GetQuote)
 
+	public := mountLookup(cfg, srv, registry)
+	if public != nil {
+		mux.HandleFunc("POST "+prefix+"/admin/handle/release", srv.AdminReleaseHandle)
+	}
+
 	// Auth middleware
 	authMiddleware := middleware.NewAuth(w)
 
@@ -136,11 +167,29 @@ func main() {
 		httpSwagger.URL("/swagger/doc.json"),
 	))
 
+	// Paymail profile lookup: public by design, so outside auth and payment.
+	// ServeMux picks the most specific pattern regardless of registration
+	// order, so these win over the catch-all below.
+	if public != nil {
+		rootMux.Handle("/.well-known/bsvalias", public)
+		rootMux.Handle("/api/handle", public)
+		rootMux.Handle("/api/handle/", public)
+		rootMux.Handle("/api/identityKey/", public)
+		slog.Info("paymail profile lookup enabled", "domain", cfg.PaymailDomain)
+		// The capability document hands PAYMAIL_HOST to clients as the base of
+		// every lookup URL. A client that resolved this server through a
+		// DNSSEC-signed SRV record did so to reach an authenticated origin, so
+		// a plain-http host is a deployment typo everywhere but local dev.
+		if !strings.HasPrefix(cfg.PaymailHost, "https://") && !isLocalHost(cfg.PaymailHost) {
+			slog.Warn("PAYMAIL_HOST is not an https origin; paymail clients may refuse the capability document", "host", cfg.PaymailHost)
+		}
+	}
+
 	rootMux.Handle("/", authMiddleware.HTTPHandler(
 		paymentMiddleware.HTTPHandler(mux),
 	))
 
-	// Stack: CORS -> rootMux -> Auth -> Payment -> Routes
+	// Stack: CORS -> rootMux -> (public lookup | Auth -> Payment -> Routes)
 	handler := &corsHandler{
 		next: rootMux,
 	}

@@ -8,6 +8,27 @@ definitions:
           type: string
         type: array
     type: object
+  handlers.AdminReleaseRequest:
+    properties:
+      handle:
+        type: string
+      skipCooldown:
+        description: |-
+          SkipCooldown defaults to true: the usual case is a user who lost their
+          key and, after out-of-band verification, re-registers with a new one.
+          Only an active handle can be released; a handle already tombstoned by its
+          owner answers 404, and its cooldown cannot be lifted from here (the
+          previous owner may reclaim it inside the cooldown regardless).
+        type: boolean
+    type: object
+  handlers.AvailabilityResponse:
+    properties:
+      available:
+        type: boolean
+      reason:
+        description: taken | too_similar | reserved | invalid | cooldown | stale
+        type: string
+    type: object
   handlers.DeliveryBlockedError:
     description: Error response when delivery is blocked for some recipients
     properties:
@@ -335,6 +356,19 @@ info:
   title: MessageBox Server API
   version: 1.0.0
 paths:
+  /.well-known/bsvalias:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Paymail capability discovery
+      tags:
+      - lookup
   /acknowledgeMessage:
     post:
       consumes:
@@ -372,6 +406,145 @@ paths:
       summary: Acknowledge receipt of messages
       tags:
       - Messages
+  /admin/handle/release:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Handle to release
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AdminReleaseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BSVAuth: []
+      summary: Operator release of a handle (lost keys)
+      tags:
+      - lookup
+  /api/handle:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Self-signed profile certificate
+        in: body
+        name: certificate
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Register, update or release a handle
+      tags:
+      - lookup
+  /api/handle/{query}:
+    get:
+      parameters:
+      - description: Partial or full handle, optionally @domain
+        in: path
+        name: query
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      summary: Search handles (capability 0ace65da5987)
+      tags:
+      - lookup
+  /api/handle/available/{handle}:
+    get:
+      parameters:
+      - description: Handle
+        in: path
+        name: handle
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.AvailabilityResponse'
+      summary: Check whether a handle can be registered
+      tags:
+      - lookup
+  /api/identityKey/{pubkey}:
+    get:
+      parameters:
+      - description: Compressed public key, hex
+        in: path
+        name: pubkey
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Reverse lookup (capability 43dcf83ddc5f)
+      tags:
+      - lookup
   /devices:
     get:
       description: Returns all devices registered for push notifications for the authenticated

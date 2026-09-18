@@ -2,3 +2,5 @@ messagebox-server
 messagebox.db
 .env
 .worktrees/
+# go build ./... drops the cmd/server binary here; root-anchored so cmd/server/ stays tracked
+/server

@@ -15,6 +15,26 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/.well-known/bsvalias": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Paymail capability discovery",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/acknowledgeMessage": {
             "post": {
                 "security": [
@@ -65,6 +85,220 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/handle/release": {
+            "post": {
+                "security": [
+                    {
+                        "BSVAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Operator release of a handle (lost keys)",
+                "parameters": [
+                    {
+                        "description": "Handle to release",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.AdminReleaseRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/handle": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Register, update or release a handle",
+                "parameters": [
+                    {
+                        "description": "Self-signed profile certificate",
+                        "name": "certificate",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/handle/available/{handle}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Check whether a handle can be registered",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Handle",
+                        "name": "handle",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.AvailabilityResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/handle/{query}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Search handles (capability 0ace65da5987)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Partial or full handle, optionally @domain",
+                        "name": "query",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/identityKey/{pubkey}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lookup"
+                ],
+                "summary": "Reverse lookup (capability 43dcf83ddc5f)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Compressed public key, hex",
+                        "name": "pubkey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -540,6 +774,30 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "handlers.AdminReleaseRequest": {
+            "type": "object",
+            "properties": {
+                "handle": {
+                    "type": "string"
+                },
+                "skipCooldown": {
+                    "description": "SkipCooldown defaults to true: the usual case is a user who lost their\nkey and, after out-of-band verification, re-registers with a new one.\nOnly an active handle can be released; a handle already tombstoned by its\nowner answers 404, and its cooldown cannot be lifted from here (the\nprevious owner may reclaim it inside the cooldown regardless).",
+                    "type": "boolean"
+                }
+            }
+        },
+        "handlers.AvailabilityResponse": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "description": "taken | too_similar | reserved | invalid | cooldown | stale",
+                    "type": "string"
                 }
             }
         },

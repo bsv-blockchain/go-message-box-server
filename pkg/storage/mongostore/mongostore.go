@@ -26,6 +26,7 @@ const (
 	permissionsColl = "message_permissions"
 	feesColl        = "server_fees"
 	devicesColl     = "device_registrations"
+	handlesColl     = "handles"
 )
 
 // Store is a MongoDB-backed storage.Store.
@@ -94,6 +95,22 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// active, which a later index field does not disturb. Putting active
 			// between the two would push ListDevices into an in-memory sort.
 			{Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "updatedAt", Value: -1}, {Key: "active", Value: 1}}},
+		},
+		handlesColl: {
+			// Look-alike handles collide here, which is what makes a claim's
+			// similarity check a unique key violation rather than a read. A
+			// released row keeps its skeleton, so the reservation outlives the
+			// owner. The handle itself needs no index: it is the _id.
+			{Keys: bson.D{{Key: "skeleton", Value: 1}}, Options: options.Index().SetUnique(true)},
+			// One handle per key, and the reverse lookup's query. Partial,
+			// because a released row has no identityKey at all and any number of
+			// those must coexist — a plain unique index would index the missing
+			// field as null and let only one row be released at a time.
+			{
+				Keys: bson.D{{Key: "identityKey", Value: 1}},
+				Options: options.Index().SetUnique(true).
+					SetPartialFilterExpression(bson.D{{Key: "identityKey", Value: bson.D{{Key: "$type", Value: "string"}}}}),
+			},
 		},
 	}
 

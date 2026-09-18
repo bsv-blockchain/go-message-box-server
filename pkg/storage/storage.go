@@ -4,6 +4,11 @@
 // deliberately free of backend concepts: no numeric surrogate keys, no
 // database/sql types, no SQL fragments. Every implementation must pass the
 // conformance suite in pkg/storage/storagetest.
+//
+// HandleStore, in handles.go, is a second and optional contract: it is not part
+// of Store, because it asks for uniqueness guarantees only some backends can
+// give. Only mongostore implements it, and only the paymail handle registry
+// needs it.
 package storage
 
 import "context"

@@ -4,7 +4,9 @@ A Go reimplementation of the [BSV MessageBox Server](https://github.com/bsv-bloc
 
 ## API Endpoints
 
-All endpoints require BRC-31 authentication via the `go-bsv-middleware` auth middleware.
+All endpoints below require BRC-31 authentication via the `go-bsv-middleware`
+auth middleware. The optional [paymail profile lookup](#paymail-profile-lookup)
+adds public, unauthenticated routes alongside them.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -25,9 +27,11 @@ cmd/server/         - Entry point, storage backend selection, middleware wiring,
 pkg/
   config/           - Environment variable loading
   handlers/         - HTTP route handlers and fee/notification policy
+  handles/          - Handle validation, look-alike skeletons, BRFC ids
+  profilecert/      - Public profile certificate parsing and verification
   storage/          - Backend-neutral persistence interface and domain types
     sqlstore/       - SQLite and PostgreSQL implementation
-    mongostore/     - MongoDB implementation
+    mongostore/     - MongoDB implementation, plus the handle registry
     storagetest/    - Conformance suite every implementation must pass
 internal/
   firebase/         - FCM push notification delivery
@@ -93,6 +97,97 @@ MONGO_TEST_URI='mongodb://localhost:27017' go test ./pkg/storage/mongostore/
 ```
 
 Both drop their tables/collections first, so point them at a throwaway database.
+
+## Paymail profile lookup
+
+An optional handle registry that maps `handle@domain` to an identity key and
+serves a self-signed BRC-52 profile certificate for it, discovered the paymail
+way (`_bsvalias._tcp` SRV record plus `/.well-known/bsvalias`). The server is a
+registry and a cache only — it cannot forge a profile, and clients must verify
+every certificate they receive; see
+[the design spec](docs/specs/2026-09-18-paymail-profile-lookup-design.md).
+
+The feature is off until `PAYMAIL_DOMAIN` is set, and it **requires
+`STORAGE_BACKEND=mongo`**: with `PAYMAIL_DOMAIN` set on any other backend the
+server refuses to start rather than come up without the registry. Production
+points `MONGO_URI` at a MongoDB Atlas `mongodb+srv://…` URI; local development
+uses MongoDB Community:
+
+```bash
+docker compose --profile mongo up -d mongo
+```
+
+### Configuration
+
+| Env | Meaning | Default |
+|---|---|---|
+| `PAYMAIL_DOMAIN` | Domain served, e.g. `example.com`. Unset → feature off, no routes mounted | unset |
+| `PAYMAIL_HOST` | Public base URL used in capability templates, e.g. `https://mb.example.com` | required when domain set |
+| `HANDLE_COOLDOWN_DAYS` | Days before a released handle may be claimed by a different key | `30` |
+| `ADMIN_IDENTITY_KEYS` | Comma list of compressed pubkey hex allowed to call admin routes | empty (admin routes reject all) |
+| `LOOKUP_RATE_PER_MIN` | Per-IP cap, shared across all five public routes; exactly `0` **disables** the limiter (it does not block traffic). Any other value that is not a non-negative integer, a negative one included, falls back to the default | `60` |
+| `TRUST_PROXY` | `true` → client IP taken from `X-Forwarded-For` instead of the connection (set when behind a load balancer) | `false` |
+| `TRUSTED_PROXY_HOPS` | How many proxies of your own sit in front of this process; the client's address is counted that many entries from the right of `X-Forwarded-For`. Only read when `TRUST_PROXY=true`; values below `1` are read as `1` | `1` |
+
+The rate limiter is in-memory and therefore per-replica: three replicas behind
+one load balancer allow three times `LOOKUP_RATE_PER_MIN` between them. Behind a
+load balancer every request also arrives from the balancer's own address, so
+without `TRUST_PROXY=true` the entire fleet shares a single bucket.
+
+Set `TRUSTED_PROXY_HOPS` to the number of proxies you run in front of the
+server — one for a single load balancer, two for a CDN in front of it. Proxies
+*append* to `X-Forwarded-For` rather than rewriting it (AWS ALB, Google Cloud
+Load Balancing, Cloudflare and nginx's `$proxy_add_x_forwarded_for` all do), so
+the leftmost entry is whatever the client chose to send and only the entry your
+own nearest proxies appended means anything. Counting from the right is what
+stops a client picking a fresh bucket for every request, or spending another
+client's. A header with fewer entries than there are hops falls back to the
+connection address, which over-counts rather than letting traffic past — so a
+hop count that is too high is safe, and one that is too low is not.
+
+### Routes
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/.well-known/bsvalias` | none | Capability discovery document |
+| PUT | `/api/handle` | the certificate itself | Register, update or release a handle |
+| GET | `/api/handle/{query}` | none | Search, ranked, max 10 (capability `0ace65da5987`) |
+| GET | `/api/handle/available/{handle}` | none | Advisory availability check |
+| GET | `/api/identityKey/{pubkey}` | none | Reverse lookup (capability `43dcf83ddc5f`) |
+| POST | `/admin/handle/release` | BRC-104 + `ADMIN_IDENTITY_KEYS` | Operator release after lost keys |
+
+The public routes carry no session auth by design: a `PUT` is authorised by the
+certificate in its body, a statement the identity key signed naming the handle.
+They sit outside the auth and payment middleware and are mounted at fixed paths;
+`ROUTING_PREFIX` applies to the admin route only.
+
+### DNS
+
+```
+_bsvalias._tcp.example.com. 3600 IN SRV 10 10 443 mb.example.com.
+```
+
+The zone must be DNSSEC-signed — clients reject an unsigned SRV answer, because
+an attacker who can forge it chooses which server answers for the domain.
+`PAYMAIL_HOST` must be the HTTPS origin the SRV target serves (`https://mb.example.com`
+above): it is what the capability document hands clients as the base of every
+lookup URL, so a client that took the trouble to reach a signed SRV target may
+refuse a plain-http URL. The server logs a warning at startup when
+`PAYMAIL_HOST` is neither an `https://` origin nor loopback. Without an SRV
+record clients fall back to `https://example.com:443/.well-known/bsvalias`.
+
+### Client verification
+
+Normative for anyone implementing a resolver:
+
+1. DNSSEC + SRV `_bsvalias._tcp.<domain>` → host; GET well-known; find capability.
+2. For every certificate received: check `type`, `subject == certifier`,
+   signature, `fields.paymail` ends with `@<queried domain>`, no `released`.
+3. Search results are suggestions. Show full `fields.paymail`; user selects.
+   Never auto-select `result[0]`. If the user entered a complete
+   `handle@domain`, require `fields.paymail` to equal it exactly.
+4. Reverse lookup: additionally require `subject ==` queried key; optionally
+   forward-resolve `fields.paymail` and compare.
 
 ## Wallet
 
@@ -185,3 +280,6 @@ All tests use real BRC-31 AuthFetch authentication against the running server.
 | `MONGO_DATABASE` | `messagebox` | MongoDB database name |
 | `BSV_NETWORK` | `mainnet` | BSV network (`mainnet`, `testnet`) |
 | `ENABLE_WEBSOCKETS` | `true` | Enable WebSocket support (not yet implemented) |
+
+The optional paymail profile lookup reads six more, listed under
+[Paymail profile lookup](#paymail-profile-lookup).

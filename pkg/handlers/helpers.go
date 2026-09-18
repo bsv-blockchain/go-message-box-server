@@ -36,6 +36,13 @@ func (e *OutputMappingError) Error() string {
 type Server struct {
 	Store  storage.Store
 	wallet sdk.Interface
+
+	lookup  *LookupConfig
+	handles storage.HandleStore // nil unless EnableLookup was called
+	// now is a test seam; nil means time.Now. Handlers call it from whatever
+	// goroutine serves the request, so it is set once before serving and never
+	// reassigned, and what it closes over must be safe to read concurrently.
+	now func() time.Time
 }
 
 // NewServer creates instance of Server used by all handlers.
