@@ -84,34 +84,41 @@ Rules (server enforces on write; clients re-check all but DB state):
 
 ## Storage
 
-New `storage.HandleStore` interface embedded in `storage.Store`
-(`pkg/storage/handles.go`), implemented by `sqlstore`, `mongostore` and the
-handlers `fakeStore`, all verified by the shared conformance suite in
-`pkg/storage/storagetest`. The contract is backend-free.
+**MongoDB only.** Production target is MongoDB Atlas; local development and
+tests use MongoDB Community (`docker compose --profile mongo up -d mongo`). SQL
+backends are not targeted: the lookup feature requires `STORAGE_BACKEND=mongo`
+and the server refuses to start when `PAYMAIL_DOMAIN` is set on another backend.
 
-Logical record (one per handle, never deleted — keeps the `issuedAt` replay
-guard and the skeleton reservation during cooldown):
+New `storage.HandleStore` interface (`pkg/storage/handles.go`). It is a
+standalone contract, **not** embedded in `storage.Store`; `mongostore` and the
+handlers `fakeStore` implement it and both pass the shared conformance suite
+`storagetest.RunHandleStoreTests`.
+
+Collection `handles`, one document per handle, never deleted (keeps the
+`issuedAt` replay guard and the skeleton reservation during cooldown):
 
 ```
-handle (key) | skeleton (unique) | identityKey (unique when set; unset = released)
-lastIdentityKey | certificate (JSON; unset when released) | serialNumber
+_id = handle | skeleton (unique index)
+identityKey (partial unique index, $type string; field absent = released)
+lastIdentityKey | certificate (JSON string; absent when released) | serialNumber
 issuedAt (highest accepted, survives release) | createdAt | updatedAt
-releasedAt | cooldownUntil (unset = none) | releasedBy ('owner' or admin key)
+releasedAt | cooldownUntil (absent = none) | releasedBy ('owner' or admin key)
 ```
 
-SQL: table `handles`, all times stored as BIGINT unix milliseconds (zone-safe,
-comparable in both dialects). Mongo: collection `handles`, `_id` = handle,
-unique index on `skeleton`, partial unique index on `identityKey`
-(`$type: string`).
+First-come-first-served comes from the unique indexes, never check-then-insert,
+and uses no multi-document transactions (works on every Atlas tier).
+`ClaimHandle` is three single-document writes in order — conditional owner
+update, conditional reclaim of a released document (`identityKey absent AND
+issuedAt < new AND (lastIdentityKey = caller OR cooldownUntil absent OR
+cooldownUntil <= now)`), insert — followed by a read-only diagnosis that maps
+the failure to `ErrHandleTaken`, `ErrHandleTooSimilar`, `ErrKeyHasHandle`,
+`ErrHandleCooldown` or `ErrStaleCertificate`. A resubmission with the stored
+`serialNumber` and `issuedAt` by the same key is a no-op.
 
-First-come-first-served comes from the unique keys, never check-then-insert,
-and no multi-statement transactions. `ClaimHandle` is three single-statement
-attempts in order — conditional owner update, conditional reclaim of a released
-row (`identityKey unset AND issuedAt < new AND (lastIdentityKey = caller OR
-cooldownUntil unset OR cooldownUntil <= now)`), insert — followed by a read-only
-diagnosis that maps the failure to `ErrHandleTaken`, `ErrHandleTooSimilar`,
-`ErrKeyHasHandle`, `ErrHandleCooldown` or `ErrStaleCertificate`. A resubmission
-with the stored `serialNumber` and `issuedAt` by the same key is a no-op.
+Search uses anchored, `regexp.QuoteMeta`-escaped `$regex` (prefix tiers walk the
+`_id` / `skeleton` indexes; the substring tier is a bounded scan, limit 10).
+User input never reaches a query as a raw pattern, operator document or field
+name. Atlas Search is a possible later upgrade, out of scope.
 
 ## HTTP API
 
@@ -155,12 +162,12 @@ Lowercased; `@domain` suffix stripped (different domain → `[]`). Min length 2.
 
 Response: `200`, JSON array of certificates (possibly empty), max 10, ranked:
 1. exact handle
-2. handle prefix (`LIKE 'q%'`)
+2. handle prefix (anchored regex on `_id`)
 3. skeleton prefix (`Skeleton(q)` vs skeleton column)
 4. handle substring (only when `len(q) ≥ 3`)
 
 Handle-only matching; `displayName` is not searched (non-unique → impersonation
-vector). No extensions (pg_trgm etc.) so sqlite and postgres behave the same.
+vector).
 
 ### `GET /api/identityKey/{pubkey}` — reverse lookup (capability `43dcf83ddc5f`)
 `{pubkey}` must match `^0[23][0-9a-f]{64}$`. Response: the single certificate,
@@ -199,14 +206,14 @@ cert). Operator cannot forge profile fields or rebind a cert to another handle.
 - `pkg/profilecert/` — parse + rule checks 1–6 over go-sdk `Certificate`.
 - `pkg/storage/handles.go` — `HandleStore` contract (`ClaimHandle`,
   `ReleaseHandle`, `GetHandle`, `GetHandleBySkeleton`, `GetHandleByIdentityKey`,
-  `SearchHandles`); implementations in `sqlstore/handles.go`,
-  `mongostore/handles.go`, handlers `fakeStore`; conformance in `storagetest/handles.go`.
+  `FindHandles`); implementations in `mongostore/handles.go` and the handlers
+  `fakeStore`; conformance in `storagetest/handles.go`.
 - `pkg/handlers/lookup.go` — public handlers; `admin_handle.go` — admin route.
 - `pkg/handlers/ratelimit.go` — per-IP token bucket (in-memory).
-- `cmd/server/main.go` — mount when `PAYMAIL_DOMAIN` set.
+- `cmd/server/main.go` — mount when `PAYMAIL_DOMAIN` set; fatal if the backend is not mongo.
 - `README.md` — DNS setup (SRV record, DNSSEC), env vars. Swagger annotations on handlers.
 
-## Testing (stdlib `testing`; conformance suite on sqlite, postgres, mongo, fake)
+## Testing (stdlib `testing`; conformance suite on mongo (local Community) and fake)
 
 - Table tests: `Validate`, `Skeleton` (each fold, separators, repeats, reserved-by-skeleton).
 - BRFC id derivation matches constants.

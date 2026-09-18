@@ -4,9 +4,9 @@
 
 **Goal:** Host a paymail-discoverable handle registry in go-message-box-server that maps `handle@domain` ⇄ identity key, serving self-signed BRC-52 profile certificates.
 
-**Architecture:** Pure-function packages (`pkg/handles`, `pkg/profilecert`) validate input; a new backend-free `storage.HandleStore` contract (sqlstore, mongostore, fake — all under the shared conformance suite) gives first-come-first-served via unique keys and single-statement conditional writes; public unauthenticated handlers on `rootMux` (cert-as-auth `PUT`, search, reverse lookup, availability, well-known) plus one BRC-104 admin release route.
+**Architecture:** Pure-function packages (`pkg/handles`, `pkg/profilecert`) validate input; a new `storage.HandleStore` contract (mongostore + the handlers fake, both under a shared conformance suite) gives first-come-first-served via unique indexes and single-document conditional writes. **Storage target is MongoDB Atlas; local dev/test uses MongoDB Community (docker `mongo` image). SQL is not targeted: sqlstore does not implement `HandleStore`, `HandleStore` is NOT embedded in `storage.Store`, and the lookup feature requires `STORAGE_BACKEND=mongo`.** Public unauthenticated handlers mount on `rootMux` (cert-as-auth `PUT`, search, reverse lookup, availability, well-known) plus one BRC-104 admin release route.
 
-**Tech Stack:** Go 1.25, stdlib `net/http` ServeMux, `database/sql` (sqlite3/postgres), mongo-driver v2, go-sdk v1.2.18 `auth/certificates`, stdlib `testing` (no testify).
+**Tech Stack:** Go 1.25, stdlib `net/http` ServeMux, mongo-driver v2 (Atlas-compatible: no transactions, no `$where`, no server-side JS), go-sdk v1.2.18 `auth/certificates`, stdlib `testing` (no testify).
 
 **Spec:** `docs/specs/2026-09-18-paymail-profile-lookup-design.md` — read it first.
 
@@ -18,7 +18,10 @@
 - Handle regex `^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$`; reserved list and skeleton folds exactly as in spec.
 - Limits: ≤ 32 fields, each value ≤ 1024 bytes, body ≤ 16384 bytes, search limit 10, min query length 2, substring tier only when `len(q) ≥ 3`.
 - Feature is off (no routes mounted) when `PAYMAIL_DOMAIN` unset.
-- Storage: no multi-statement transactions, no check-then-insert; rows never deleted; every backend passes `storagetest`.
+- Storage: MongoDB only. No multi-document transactions, no check-then-insert; documents never deleted; mongostore and the fake both pass `storagetest.RunHandleStoreTests`. Do not touch `pkg/storage/sqlstore`. Do not add `HandleStore` to the `storage.Store` interface.
+- Mongo tests MUST actually run (not skip). A community MongoDB is listening on `mongodb://localhost:27017`. Always run mongostore tests as:
+  `MONGO_TEST_URI=mongodb://localhost:27017 MONGO_TEST_DATABASE=messagebox_lookup_test go test ./pkg/storage/mongostore/`
+  (the suite drops that database — never point it at any other name). If it is unreachable: `docker compose --profile mongo up -d mongo`.
 - Tests: stdlib `testing` only. Errors via existing `writeError(w, status, code, description)`.
 - Run from repo root. Full check before each commit: `go build ./... && go test ./...`.
 - Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
@@ -32,7 +35,6 @@
 | `pkg/storage/handles.go` | `HandleStore` contract, types, errors, `DiagnoseClaim`, `DiagnoseRelease` |
 | `pkg/storage/storagetest/handles.go` | Conformance tests for `HandleStore` |
 | `pkg/handlers/fakestore_handles_test.go` | fake implementation |
-| `pkg/storage/sqlstore/handles.go` | SQL implementation (+ migration in `sqlstore.go`) |
 | `pkg/storage/mongostore/handles.go` | Mongo implementation (+ indexes in `mongostore.go`) |
 | `pkg/config/config.go` | new env vars |
 | `pkg/handlers/ratelimit.go` | per-IP fixed-window limiter middleware |
@@ -617,8 +619,8 @@ git add pkg/profilecert && git commit -m "feat(profilecert): verify self-signed 
 ### Task 3: `HandleStore` contract, conformance suite, fake store
 
 The contract lands together with the fake so the suite has one passing
-implementation; `storage.Store` does **not** embed `HandleStore` until Task 5
-(so sqlstore/mongostore keep compiling).
+implementation. `HandleStore` is a standalone interface: it is **never** embedded
+in `storage.Store` (sqlstore does not implement it).
 
 **Files:**
 - Create: `pkg/storage/handles.go`
@@ -1353,311 +1355,23 @@ git commit -m "feat(storage): HandleStore contract, conformance suite and fake"
 
 ---
 
-### Task 4: sqlstore implementation
+### Task 4: (removed)
 
-**Files:**
-- Create: `pkg/storage/sqlstore/handles.go`
-- Modify: `pkg/storage/sqlstore/sqlstore.go` (both migration lists)
-- Modify: `pkg/storage/sqlstore/sqlstore_test.go`, `pkg/storage/sqlstore/postgres_test.go`
-
-**Interfaces:**
-- Consumes: Task 3 contract; existing `s.exec`, `s.queryRow`, `s.query`, `nullStr`.
-- Produces: `*sqlstore.Store` implements `storage.HandleStore`.
-
-- [ ] **Step 1: Hook the suite (failing)**
-
-In `sqlstore_test.go` add:
-
-```go
-func TestHandleConformance_SQLite(t *testing.T) {
-	storagetest.RunHandleStoreTests(t, func(t *testing.T) storage.HandleStore { return newSQLite(t).(*Store) })
-}
-
-func TestHandleConformance_SQLiteFile(t *testing.T) {
-	storagetest.RunHandleStoreTests(t, func(t *testing.T) storage.HandleStore {
-		t.Helper()
-		s, err := New("sqlite3", filepath.Join(t.TempDir(), "messagebox.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s.EnsureSchema(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { s.Close() })
-		return s
-	})
-}
-```
-
-Add `"handles"` to the table list in `TestSQLiteSchema`. In `postgres_test.go`,
-mirror the existing `TestConformance_Postgres` with
-`storagetest.RunHandleStoreTests` and the same `newPostgres` constructor
-(cast its result with `.(*Store)`), same `POSTGRES_TEST_DSN` skip.
-
-Run: `go test ./pkg/storage/sqlstore/` → FAIL (does not compile: `*Store` lacks `ClaimHandle`).
-
-- [ ] **Step 2: Migration**
-
-Append the same statement to the `tables` slice in **both** `sqliteMigrations()`
-and `postgresMigrations()` (BIGINT and TEXT are valid in both dialects):
-
-```go
-		`CREATE TABLE IF NOT EXISTS handles (
-			handle TEXT PRIMARY KEY,
-			skeleton TEXT NOT NULL UNIQUE,
-			identity_key TEXT UNIQUE,
-			last_identity_key TEXT NOT NULL,
-			certificate TEXT,
-			serial_number TEXT NOT NULL,
-			issued_at BIGINT NOT NULL,
-			created_at BIGINT NOT NULL,
-			updated_at BIGINT NOT NULL,
-			released_at BIGINT,
-			cooldown_until BIGINT,
-			released_by TEXT
-		)`,
-```
-
-All times are unix milliseconds. A SQL `UNIQUE` treats NULLs as distinct, which
-is exactly what released rows (NULL `identity_key`) need.
-
-- [ ] **Step 3: Implementation**
-
-`pkg/storage/sqlstore/handles.go`:
-
-```go
-package sqlstore
-
-import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
-
-	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
-)
-
-const handleColumns = `handle, skeleton, identity_key, last_identity_key, certificate, serial_number,
-	issued_at, created_at, updated_at, released_at, cooldown_until, released_by`
-
-func fromMillis(v int64) time.Time { return time.UnixMilli(v).UTC() }
-
-func nullMillis(n sql.NullInt64) *time.Time {
-	if !n.Valid {
-		return nil
-	}
-	t := fromMillis(n.Int64)
-	return &t
-}
-
-func millisPtr(t *time.Time) any {
-	if t == nil {
-		return nil
-	}
-	return t.UnixMilli()
-}
-
-func scanHandle(sc interface{ Scan(...any) error }) (storage.HandleRecord, error) {
-	var (
-		r                          storage.HandleRecord
-		key, cert, by              sql.NullString
-		issued, created, updated   int64
-		released, cooldown         sql.NullInt64
-	)
-	err := sc.Scan(&r.Handle, &r.Skeleton, &key, &r.LastIdentityKey, &cert, &r.SerialNumber,
-		&issued, &created, &updated, &released, &cooldown, &by)
-	if err != nil {
-		return r, err
-	}
-	r.IdentityKey, r.Certificate, r.ReleasedBy = nullStr(key), nullStr(cert), nullStr(by)
-	r.IssuedAt, r.CreatedAt, r.UpdatedAt = fromMillis(issued), fromMillis(created), fromMillis(updated)
-	r.ReleasedAt, r.CooldownUntil = nullMillis(released), nullMillis(cooldown)
-	return r, nil
-}
-
-func (s *Store) getHandleWhere(ctx context.Context, where string, arg string) (*storage.HandleRecord, error) {
-	r, err := scanHandle(s.queryRow(ctx, `SELECT `+handleColumns+` FROM handles WHERE `+where, arg))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
-// GetHandle implements storage.HandleReader.
-func (s *Store) GetHandle(ctx context.Context, handle string) (*storage.HandleRecord, error) {
-	return s.getHandleWhere(ctx, `handle = ?`, handle)
-}
-
-// GetHandleBySkeleton implements storage.HandleReader.
-func (s *Store) GetHandleBySkeleton(ctx context.Context, skeleton string) (*storage.HandleRecord, error) {
-	return s.getHandleWhere(ctx, `skeleton = ?`, skeleton)
-}
-
-// GetHandleByIdentityKey implements storage.HandleReader.
-func (s *Store) GetHandleByIdentityKey(ctx context.Context, identityKey string) (*storage.HandleRecord, error) {
-	return s.getHandleWhere(ctx, `identity_key = ?`, identityKey)
-}
-
-func affected(res sql.Result, err error) (bool, error) {
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n > 0, err
-}
-
-// ClaimHandle implements storage.HandleStore. Each attempt is one statement, so
-// the unique keys decide a race and no transaction is held. An attempt that
-// errors (a unique violation, typically) is explained by DiagnoseClaim, which
-// returns the error itself when the registry shows no conflict.
-func (s *Store) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
-	issued, now := c.IssuedAt.UnixMilli(), nowUTC().UnixMilli()
-
-	ok, err := affected(s.exec(ctx,
-		`UPDATE handles SET certificate = ?, serial_number = ?, issued_at = ?, updated_at = ?
-		 WHERE handle = ? AND identity_key = ? AND issued_at < ? AND serial_number <> ?`,
-		c.Certificate, c.SerialNumber, issued, now,
-		c.Handle, c.IdentityKey, issued, c.SerialNumber))
-	if err != nil {
-		return storage.DiagnoseClaim(ctx, s, c, err)
-	}
-	if ok {
-		return storage.ClaimUpdated, nil
-	}
-
-	ok, err = affected(s.exec(ctx,
-		`UPDATE handles SET identity_key = ?, last_identity_key = ?, certificate = ?, serial_number = ?,
-		        issued_at = ?, updated_at = ?, released_at = NULL, cooldown_until = NULL, released_by = NULL
-		 WHERE handle = ? AND identity_key IS NULL AND issued_at < ?
-		   AND (last_identity_key = ? OR cooldown_until IS NULL OR cooldown_until <= ?)`,
-		c.IdentityKey, c.IdentityKey, c.Certificate, c.SerialNumber, issued, now,
-		c.Handle, issued, c.IdentityKey, c.Now.UnixMilli()))
-	if err != nil {
-		return storage.DiagnoseClaim(ctx, s, c, err)
-	}
-	if ok {
-		return storage.ClaimCreated, nil
-	}
-
-	_, err = s.exec(ctx,
-		`INSERT INTO handles (handle, skeleton, identity_key, last_identity_key, certificate, serial_number,
-		                      issued_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Handle, c.Skeleton, c.IdentityKey, c.IdentityKey, c.Certificate, c.SerialNumber, issued, now, now)
-	if err != nil {
-		return storage.DiagnoseClaim(ctx, s, c, err)
-	}
-	return storage.ClaimCreated, nil
-}
-
-// ReleaseHandle implements storage.HandleStore.
-func (s *Store) ReleaseHandle(ctx context.Context, r storage.HandleRelease) error {
-	now := nowUTC().UnixMilli()
-	var (
-		ok  bool
-		err error
-	)
-	if r.Owner != nil {
-		if r.IssuedAt == nil {
-			return fmt.Errorf("owner release without IssuedAt")
-		}
-		issued := r.IssuedAt.UnixMilli()
-		ok, err = affected(s.exec(ctx,
-			`UPDATE handles SET identity_key = NULL, certificate = NULL, issued_at = ?, updated_at = ?,
-			        released_at = ?, cooldown_until = ?, released_by = ?
-			 WHERE handle = ? AND identity_key = ? AND issued_at < ?`,
-			issued, now, r.Now.UnixMilli(), millisPtr(r.CooldownUntil), r.ReleasedBy,
-			r.Handle, *r.Owner, issued))
-	} else {
-		ok, err = affected(s.exec(ctx,
-			`UPDATE handles SET identity_key = NULL, certificate = NULL, updated_at = ?,
-			        released_at = ?, cooldown_until = ?, released_by = ?
-			 WHERE handle = ? AND identity_key IS NOT NULL`,
-			now, r.Now.UnixMilli(), millisPtr(r.CooldownUntil), r.ReleasedBy, r.Handle))
-	}
-	if err != nil || !ok {
-		return storage.DiagnoseRelease(ctx, s, r, err)
-	}
-	return nil
-}
-
-var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-
-// FindHandles implements storage.HandleStore.
-func (s *Store) FindHandles(ctx context.Context, m storage.HandleMatch) ([]storage.HandleRecord, error) {
-	column := "handle"
-	if m.Field == storage.HandleFieldSkeleton {
-		column = "skeleton"
-	}
-	pattern := likeEscaper.Replace(m.Value) + "%"
-	if m.Mode == storage.HandleMatchContains {
-		pattern = "%" + pattern
-	}
-	limit := m.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	rows, err := s.query(ctx,
-		`SELECT `+handleColumns+` FROM handles
-		 WHERE identity_key IS NOT NULL AND `+column+` LIKE ? ESCAPE '\'
-		 ORDER BY handle ASC LIMIT ?`, pattern, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []storage.HandleRecord{}
-	for rows.Next() {
-		r, err := scanHandle(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-var _ storage.HandleStore = (*Store)(nil)
-```
-
-Notes for the implementer:
-- `nowUTC()` already exists in `queries.go`.
-- Ordering `handle ASC`: the suite expects byte order (`a_deg` < `deg`). If
-  Postgres collation orders differently, use `ORDER BY handle COLLATE "C" ASC`
-  on postgres — check `s.textCollation()` in `queries.go`, which already solves
-  this for permissions, and reuse it.
-- Postgres with `standard_conforming_strings=on` (default) accepts `ESCAPE '\'`.
-
-- [ ] **Step 4: Run**
-
-Run: `go test ./pkg/storage/sqlstore/ -run Handle -v 2>&1 | tail -30`
-Expected: PASS for SQLite + SQLiteFile (Postgres skipped without DSN). If
-`POSTGRES_TEST_DSN` is available (see `docker-compose.yml`), run it too.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add pkg/storage/sqlstore && git commit -m "feat(sqlstore): handle registry"
-```
+SQL is not a target for this feature (MongoDB Atlas only). There is no sqlstore
+implementation of `HandleStore`. Skip to Task 5.
 
 ---
 
-### Task 5: mongostore implementation + embed in `storage.Store`
+### Task 5: mongostore implementation
 
 **Files:**
 - Create: `pkg/storage/mongostore/handles.go`
 - Modify: `pkg/storage/mongostore/mongostore.go` (collection const + indexes)
 - Modify: `pkg/storage/mongostore/mongostore_test.go`
-- Modify: `pkg/storage/storage.go` (embed `HandleStore`)
-- Modify: `pkg/storage/storagetest/storagetest.go` (run handle suite from `RunStoreTests`)
+- Modify: `pkg/storage/storage.go` (package doc comment only: mention that `HandleStore` in `handles.go` is an optional contract implemented by mongostore)
 
 **Interfaces:**
-- Produces: `*mongostore.Store` implements `storage.HandleStore`; `storage.Store` embeds `HandleStore`.
+- Produces: `*mongostore.Store` implements `storage.HandleStore` (compile-time assertion in `handles.go`). `storage.Store` is unchanged.
 
 - [ ] **Step 1: Hook the suite**
 
@@ -1894,33 +1608,37 @@ Timestamps handed in (`IssuedAt`, `Now`, `CooldownUntil`) are already
 millisecond precision (profilecert truncates; handlers truncate `now`), which is
 what BSON stores.
 
-- [ ] **Step 4: Embed in `Store` and the main suite**
-
-`pkg/storage/storage.go` — add `HandleStore` to the `Store` interface embeds
-(after `FeeStore`). `pkg/storage/storagetest/storagetest.go` — add to
-`RunStoreTests`:
-
-```go
-	t.Run("Handles", func(t *testing.T) {
-		RunHandleStoreTests(t, func(t *testing.T) storage.HandleStore { return newStore(t) })
-	})
-```
-
-Then delete the now-redundant standalone `TestHandleConformance_*` /
-`TestConformance_FakeHandles` tests added in Tasks 3–5 (the main suite covers
-them on every backend, including SQLiteFile and Postgres).
-
-- [ ] **Step 5: Run**
-
-Run: `go build ./... && go vet ./... && go test ./...`
-Expected: PASS; Mongo/Postgres suites SKIP without env. If a Mongo is available:
-`MONGO_TEST_URI=mongodb://localhost:27017 go test ./pkg/storage/mongostore/ -v | tail -20` → PASS.
-State in the task report whether Mongo and Postgres were actually run.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Run against a real MongoDB (mandatory)**
 
 ```bash
-git add pkg/storage pkg/handlers && git commit -m "feat(mongostore): handle registry; embed HandleStore in Store"
+go build ./... && go vet ./pkg/storage/...
+MONGO_TEST_URI=mongodb://localhost:27017 MONGO_TEST_DATABASE=messagebox_lookup_test \
+  go test ./pkg/storage/mongostore/ -run 'Handle' -v 2>&1 | tail -40
+MONGO_TEST_URI=mongodb://localhost:27017 MONGO_TEST_DATABASE=messagebox_lookup_test \
+  go test -race -count=3 ./pkg/storage/mongostore/
+```
+Expected: every `TestHandleConformance_Mongo/*` subtest PASS (not SKIP), including
+`ConcurrentClaimsOneWinner`; the pre-existing `TestConformance_Mongo` still PASS.
+A skipped Mongo suite is a task failure — report it, do not claim success.
+
+Also verify the indexes really exist and the partial filter took:
+
+```bash
+mongosh --quiet mongodb://localhost:27017/messagebox_lookup_test --eval 'printjson(db.handles.getIndexes())'
+```
+Expected: `skeleton_1` unique; `identityKey_1` unique with
+`partialFilterExpression: { identityKey: { $type: "string" } }`.
+
+Atlas compatibility rules for this file: no transactions/sessions, no
+`$where`/`$function`, no `collMod`, only `createIndexes`/`find`/`insertOne`/
+`updateOne`. User input reaches a query only as (a) an exact-match string value
+or (b) `regexp.QuoteMeta`-escaped `$regex` — never as a raw pattern, operator
+document or field name.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pkg/storage && git commit -m "feat(mongostore): handle registry"
 ```
 
 ---
@@ -2208,14 +1926,14 @@ git add pkg/handlers/ratelimit.go pkg/handlers/ratelimit_test.go && git commit -
 
 **Files:**
 - Create: `pkg/handlers/lookup.go`
-- Modify: `pkg/handlers/helpers.go` (Server struct: add `lookup *LookupConfig`, `now func() time.Time`)
+- Modify: `pkg/handlers/helpers.go` (Server struct: add `lookup *LookupConfig`, `handles storage.HandleStore`, `now func() time.Time`)
 - Test: `pkg/handlers/lookup_test.go`
 
 **Interfaces:**
-- Consumes: `handles.Validate/Skeleton/BRFC*`, `profilecert.Parse/MaxBody/Err*`, `storage.HandleStore` via `s.Store`, `certtest`.
+- Consumes: `handles.Validate/Skeleton/BRFC*`, `profilecert.Parse/MaxBody/Err*`, `storage.HandleStore` via the new `s.handles` field (NOT `s.Store` — `storage.Store` has no handle methods), `certtest`.
 - Produces:
   - `type LookupConfig struct { Domain, Host string; Cooldown time.Duration; AdminKeys []string }`
-  - `func (s *Server) EnableLookup(c LookupConfig)`
+  - `func (s *Server) EnableLookup(c LookupConfig, hs storage.HandleStore)`
   - `func (s *Server) LookupRoutes() *http.ServeMux` — mounts `GET /.well-known/bsvalias`, `PUT /api/handle`, `GET /api/handle/available/{handle}`, `GET /api/handle/{query}`, `GET /api/identityKey/{pubkey}`
   - unexported `s.clock() time.Time` (ms-truncated UTC; uses `s.now` when set)
 
@@ -2251,7 +1969,7 @@ type lookupEnv struct {
 func newLookupEnv(t *testing.T) *lookupEnv {
 	t.Helper()
 	e := &lookupEnv{t: t, srv: setupTestServer(t), clock: time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)}
-	e.srv.EnableLookup(LookupConfig{Domain: testDomain, Host: "https://mb.example.com", Cooldown: 30 * 24 * time.Hour, AdminKeys: []string{mockIdentityKey}})
+	e.srv.EnableLookup(LookupConfig{Domain: testDomain, Host: "https://mb.example.com", Cooldown: 30 * 24 * time.Hour, AdminKeys: []string{mockIdentityKey}}, e.srv.Store.(*fakeStore))
 	e.srv.now = func() time.Time { return e.clock }
 	e.mux = e.srv.LookupRoutes()
 	return e
@@ -2506,8 +2224,9 @@ type Server struct {
 	Store  storage.Store
 	wallet sdk.Interface
 
-	lookup *LookupConfig
-	now    func() time.Time // test seam; nil means time.Now
+	lookup  *LookupConfig
+	handles storage.HandleStore // nil unless EnableLookup was called
+	now     func() time.Time    // test seam; nil means time.Now
 }
 ```
 
@@ -2557,8 +2276,12 @@ type AvailabilityResponse struct {
 	Reason    string `json:"reason,omitempty"` // taken | too_similar | reserved | invalid | cooldown
 }
 
-// EnableLookup turns the lookup feature on.
-func (s *Server) EnableLookup(c LookupConfig) { s.lookup = &c }
+// EnableLookup turns the lookup feature on. The handle registry is passed
+// separately because it is not part of storage.Store: only the Mongo backend
+// implements it.
+func (s *Server) EnableLookup(c LookupConfig, hs storage.HandleStore) {
+	s.lookup, s.handles = &c, hs
+}
 
 // clock is the current time at the precision every backend stores.
 func (s *Server) clock() time.Time {
@@ -2672,7 +2395,7 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 	now := s.clock()
 	if p.Released {
 		until := now.Add(s.lookup.Cooldown)
-		err := s.Store.ReleaseHandle(r.Context(), storage.HandleRelease{
+		err := s.handles.ReleaseHandle(r.Context(), storage.HandleRelease{
 			Handle: p.Handle, Owner: &p.IdentityKey, IssuedAt: &p.IssuedAt,
 			ReleasedBy: "owner", CooldownUntil: &until, Now: now,
 		})
@@ -2684,7 +2407,7 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.Store.ClaimHandle(r.Context(), storage.HandleClaim{
+	res, err := s.handles.ClaimHandle(r.Context(), storage.HandleClaim{
 		Handle: p.Handle, Skeleton: handles.Skeleton(p.Handle), IdentityKey: p.IdentityKey,
 		Certificate: p.JSON, SerialNumber: p.SerialNumber, IssuedAt: p.IssuedAt, Now: now,
 	})
@@ -2738,7 +2461,7 @@ func (s *Server) search(ctx context.Context, q string) ([]string, error) {
 		}
 	}
 	// The exact handle leads even when ten other handles share the prefix.
-	exact, err := s.Store.GetHandle(ctx, q)
+	exact, err := s.handles.GetHandle(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -2750,7 +2473,7 @@ func (s *Server) search(ctx context.Context, q string) ([]string, error) {
 			break
 		}
 		m.Limit = searchLimit
-		recs, err := s.Store.FindHandles(ctx, m)
+		recs, err := s.handles.FindHandles(ctx, m)
 		if err != nil {
 			return nil, err
 		}
@@ -2796,7 +2519,7 @@ func (s *Server) LookupIdentityKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_LOOKUP", "Expected a 33-byte compressed public key in hex.")
 		return
 	}
-	rec, err := s.Store.GetHandleByIdentityKey(r.Context(), key)
+	rec, err := s.handles.GetHandleByIdentityKey(r.Context(), key)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -2832,7 +2555,7 @@ func (s *Server) unavailableReason(ctx context.Context, handle string) (string, 
 	case err != nil:
 		return "invalid", nil
 	}
-	rec, err := s.Store.GetHandleBySkeleton(ctx, handles.Skeleton(handle))
+	rec, err := s.handles.GetHandleBySkeleton(ctx, handles.Skeleton(handle))
 	if err != nil || rec == nil {
 		return "", err
 	}
@@ -2966,7 +2689,7 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 		writeError(w, http.StatusUnauthorized, "ERR_AUTH_REQUIRED", "Authentication required.")
 		return
 	}
-	if s.lookup == nil || !slices.Contains(s.lookup.AdminKeys, strings.ToLower(caller)) {
+	if s.lookup == nil || s.handles == nil || !slices.Contains(s.lookup.AdminKeys, strings.ToLower(caller)) {
 		writeError(w, http.StatusForbidden, "ERR_NOT_ADMIN", "This identity key may not release handles.")
 		return
 	}
@@ -2977,7 +2700,7 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 	}
 	handle := strings.ToLower(strings.TrimSpace(req.Handle))
 
-	prev, err := s.Store.GetHandle(r.Context(), handle)
+	prev, err := s.handles.GetHandle(r.Context(), handle)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -2988,7 +2711,7 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 		until := now.Add(s.lookup.Cooldown)
 		rel.CooldownUntil = &until
 	}
-	if err := s.Store.ReleaseHandle(r.Context(), rel); err != nil {
+	if err := s.handles.ReleaseHandle(r.Context(), rel); err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
@@ -3025,68 +2748,96 @@ git add pkg/handlers/admin_handle.go pkg/handlers/admin_handle_test.go && git co
 
 - [ ] **Step 1: Wire**
 
-After the existing `mux.HandleFunc(...)` block and before `rootMux.Handle("/", ...)`:
+After the existing `mux.HandleFunc(...)` block and before `rootMux.Handle("/", ...)`.
+`mbstorage` is the existing import alias of `pkg/storage` in `main.go`:
 
 ```go
-	if cfg.PaymailDomain != "" {
+	lookupEnabled := cfg.PaymailDomain != ""
+	if lookupEnabled {
+		// The handle registry exists only on the Mongo backend.
+		registry, ok := store.(mbstorage.HandleStore)
+		if !ok {
+			slog.Error("PAYMAIL_DOMAIN requires STORAGE_BACKEND=mongo", "backend", cfg.StorageBackend)
+			os.Exit(1)
+		}
 		srv.EnableLookup(handlers.LookupConfig{
 			Domain:    cfg.PaymailDomain,
 			Host:      cfg.PaymailHost,
 			Cooldown:  cfg.HandleCooldown,
 			AdminKeys: cfg.AdminIdentityKeys,
-		})
+		}, registry)
 		mux.HandleFunc("POST "+prefix+"/admin/handle/release", srv.AdminReleaseHandle)
 	}
 ```
 
-and after `rootMux` gets swagger (it must be registered before/alongside `"/"`;
-ServeMux picks the most specific pattern regardless of order):
+and next to the swagger mount on `rootMux` (ServeMux picks the most specific
+pattern regardless of registration order):
 
 ```go
 	// Paymail profile lookup: public by design, so outside auth and payment.
-	if cfg.PaymailDomain != "" {
+	if lookupEnabled {
 		public := handlers.NewRateLimiter(cfg.LookupRatePerMin, cfg.TrustProxy).Wrap(srv.LookupRoutes())
 		rootMux.Handle("/.well-known/bsvalias", public)
 		rootMux.Handle("/api/handle", public)
 		rootMux.Handle("/api/handle/", public)
 		rootMux.Handle("/api/identityKey/", public)
-		logger.Log("Paymail profile lookup enabled", "domain", cfg.PaymailDomain)
+		slog.Info("paymail profile lookup enabled", "domain", cfg.PaymailDomain)
 	}
 ```
 
-Check `logger.Log`'s signature in `internal/logger/logger.go`; if it takes only a
-message, use `slog.Info` with the attrs instead. Update the stack comment to
-`CORS -> rootMux -> (public lookup | Auth -> Payment -> Routes)`.
+The `os.Exit(1)` must happen before `ListenAndServe` and after `defer store.Close()`
+is registered — note `os.Exit` skips defers; mirror how the existing fatal paths
+in `main()` handle that (they also `os.Exit(1)` after `slog.Error`). Update the
+stack comment to `CORS -> rootMux -> (public lookup | Auth -> Payment -> Routes)`.
 
-- [ ] **Step 2: Build + manual end-to-end**
+- [ ] **Step 2: Build + end-to-end against local MongoDB**
 
 ```bash
 go build ./... && go vet ./... && go test -race ./...
+MONGO_TEST_URI=mongodb://localhost:27017 MONGO_TEST_DATABASE=messagebox_lookup_test go test -race ./pkg/storage/mongostore/
 ```
-Expected: PASS.
+Expected: PASS, Mongo suite not skipped.
 
-Then run the server (sqlite) in the background and probe:
+Write a throwaway Go program under the scratch dir given in your task prompt
+(NOT in the repo) that uses `certtest`-equivalent code (go-sdk
+`certificates.NewCertificate` + `Sign`) to print a signed profile certificate
+JSON for a random key, handle `e2euser`, domain `example.com`, `issuedAt` now —
+or simpler: add nothing to the repo and drive the e2e from a Go test file placed
+in the scratch dir with a `replace`-free `go run` inside the repo module
+(`go run /abs/scratch/mkcert.go` works when run from the repo root because the
+file is compiled in the repo's module context).
+
+Run the server on Mongo in the background (use a free port, e.g. 18080):
 
 ```bash
-SERVER_PRIVATE_KEY=$(openssl rand -hex 32) PAYMAIL_DOMAIN=example.com PAYMAIL_HOST=http://localhost:8080 \
-  DB_SOURCE=/tmp/lookup-e2e.db NODE_ENV=development go run ./cmd/server
+SERVER_PRIVATE_KEY=$(openssl rand -hex 32) STORAGE_BACKEND=mongo MONGO_URI=mongodb://localhost:27017 \
+  MONGO_DATABASE=messagebox_lookup_e2e PAYMAIL_DOMAIN=example.com PAYMAIL_HOST=http://localhost:18080 \
+  PORT=18080 NODE_ENV=development go run ./cmd/server
 ```
 ```bash
-curl -s localhost:8080/.well-known/bsvalias
-curl -s localhost:8080/api/handle/de
-curl -s localhost:8080/api/handle/available/deggen
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/identityKey/02$(printf 'a%.0s' {1..64})
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/listMessages
+curl -s localhost:18080/.well-known/bsvalias
+curl -s -X PUT --data-binary @cert.json -w '\n%{http_code}\n' localhost:18080/api/handle     # 201
+curl -s -X PUT --data-binary @cert.json -w '\n%{http_code}\n' localhost:18080/api/handle     # 200 (unchanged)
+curl -s localhost:18080/api/handle/e2e                                                       # [ {cert} ]
+curl -s localhost:18080/api/handle/available/e2euser                                         # taken
+curl -s localhost:18080/api/handle/available/e2eu5er                                         # too_similar
+curl -s localhost:18080/api/identityKey/<subject from cert.json>                             # {cert}
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:18080/listMessages                # 401
 ```
-Expected: capabilities JSON with both BRFC ids; `[]`; `{"available":true}`; `404`;
-`401` (authed routes still guarded). Restart without `PAYMAIL_DOMAIN`: the
-well-known must now hit the auth wall (`401`), proving the feature is off.
-Stop the server; remove `/tmp/lookup-e2e.db`.
+Then restart with `STORAGE_BACKEND=sql DB_SOURCE=<scratch>/x.db` and
+`PAYMAIL_DOMAIN` still set: the process must exit non-zero with
+`PAYMAIL_DOMAIN requires STORAGE_BACKEND=mongo`. Then restart on mongo without
+`PAYMAIL_DOMAIN`: `/.well-known/bsvalias` must hit the auth wall (401), proving
+the feature is off. Stop every server you started; drop the e2e database:
+`mongosh --quiet mongodb://localhost:27017/messagebox_lookup_e2e --eval 'db.dropDatabase()'`.
+Paste the actual outputs in your report.
 
 - [ ] **Step 3: README**
 
 Add a `## Paymail profile lookup` section containing: what it is (2 sentences +
-link to the spec); the env var table from the spec; the route table
+link to the spec); that it **requires `STORAGE_BACKEND=mongo`** (production:
+MongoDB Atlas `mongodb+srv://…` URI in `MONGO_URI`; local dev: MongoDB Community
+via `docker compose --profile mongo up -d mongo`); the env var table from the spec; the route table
 (method, path, auth, purpose); the DNS block:
 
 ```
@@ -3101,9 +2852,11 @@ balancer.
 
 - [ ] **Step 4: Swagger**
 
-Run `which swag && swag init -g cmd/server/main.go -o docs` (check README or
-git log for the exact flags previously used). If `swag` is absent, skip and say
-so in the report — do not hand-edit generated files.
+`swag` is installed at `/Users/personal/go/bin/swag` (v1.16.x). Run
+`swag init -g cmd/server/main.go -o docs` from the repo root (check README / git
+log for the exact flags previously used and match them). Confirm the five new
+public routes and the admin route appear in `docs/swagger.json`. Do not
+hand-edit generated files.
 
 - [ ] **Step 5: Commit**
 
@@ -3115,7 +2868,7 @@ git add cmd/server/main.go README.md docs && git commit -m "feat: mount paymail 
 
 ## Self-Review Notes
 
-- Spec coverage: capabilities/BRFC (T1, T8), cert rules 1–6 (T2), handle rules (T1), storage + FCFS + cooldown + replay guard (T3–5), config (T6), rate limit + body cap (T7, T8), all five public routes (T8), admin release + audit (T9), feature-off + mounting outside auth (T10), README DNS + client verification (T10). Out-of-scope items untouched.
+- Spec coverage: capabilities/BRFC (T1, T8), cert rules 1–6 (T2), handle rules (T1), storage + FCFS + cooldown + replay guard (T3, T5; Mongo only), config (T6), rate limit + body cap (T7, T8), all five public routes (T8), admin release + audit (T9), feature-off + mounting outside auth (T10), README DNS + client verification (T10). Out-of-scope items untouched.
 - `serialNumber must differ on update` maps to `ErrStaleCertificate` (spec lists no separate code).
 - `ERR_BODY_TOO_LARGE` (413) and `ERR_RATE_LIMITED` (429), `ERR_INVALID_LOOKUP`, `ERR_NOT_ADMIN`, `ERR_INTERNAL` are the concrete codes for statuses the spec gives without names.
 - Partial `@domain` while typing (`deg@exa`) is accepted via prefix match on the configured domain — a small extension of the spec's "strip `@domain`", needed for as-you-type search.
