@@ -49,6 +49,7 @@ type Config struct {
 	AdminIdentityKeys []string
 	LookupRatePerMin  int
 	TrustProxy        bool
+	TrustedProxyHops  int
 }
 
 // Load reads configuration from environment variables.
@@ -95,6 +96,15 @@ func Load() (*Config, error) {
 	cfg.HandleCooldown = time.Duration(cooldownDays) * 24 * time.Hour
 	cfg.LookupRatePerMin = getEnvInt("LOOKUP_RATE_PER_MIN", 60)
 	cfg.TrustProxy = strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true")
+	// How many proxies of your own sit in front of this process. Each appends
+	// the address it accepted the connection from to X-Forwarded-For, so the
+	// client's own address is that many entries from the right — everything to
+	// the left of it is whatever the client chose to send. Counting from the
+	// left instead would let a client pick its own rate-limit bucket.
+	cfg.TrustedProxyHops = getEnvInt("TRUSTED_PROXY_HOPS", 1)
+	if cfg.TrustedProxyHops < 1 {
+		cfg.TrustedProxyHops = 1
+	}
 	seenAdmin := make(map[string]bool)
 	for _, k := range strings.Split(os.Getenv("ADMIN_IDENTITY_KEYS"), ",") {
 		k = strings.ToLower(strings.TrimSpace(k))

@@ -796,7 +796,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "reason": {
-                    "description": "taken | too_similar | reserved | invalid | cooldown",
+                    "description": "taken | too_similar | reserved | invalid | cooldown | stale",
                     "type": "string"
                 }
             }

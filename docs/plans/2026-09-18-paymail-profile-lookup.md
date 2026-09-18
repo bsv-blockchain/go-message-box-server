@@ -2872,3 +2872,46 @@ git add cmd/server/main.go README.md docs && git commit -m "feat: mount paymail 
 - `serialNumber must differ on update` maps to `ErrStaleCertificate` (spec lists no separate code).
 - `ERR_BODY_TOO_LARGE` (413) and `ERR_RATE_LIMITED` (429), `ERR_INVALID_LOOKUP`, `ERR_NOT_ADMIN`, `ERR_INTERNAL` are the concrete codes for statuses the spec gives without names.
 - Partial `@domain` while typing (`deg@exa`) is accepted via prefix match on the configured domain — a small extension of the spec's "strip `@domain`", needed for as-you-type search.
+
+---
+
+## Post-implementation review amendments (2026-09-18)
+
+A whole-branch review changed behaviour the task bodies above prescribe. The
+spec is the normative record; these are the points where the code blocks in
+this plan no longer describe what ships.
+
+- **`issuedAt` is bounded against the server clock** (`profilecert.Parse` now
+  takes a `now`; `MaxClockSkew` is five minutes). Unbounded, one unauthenticated
+  `PUT` dated in the far future left a handle and its whole look-alike class
+  permanently unclaimable, by its owner and by an operator alike, because every
+  write has to beat the stored value and the last instant RFC 3339 can spell
+  cannot be beaten. Spec rule 4 records the bound.
+- **The rate limiter keys on a trusted hop, not the leftmost `X-Forwarded-For`
+  entry.** Proxies append rather than rewrite, so the leftmost entry is
+  client-controlled: as written, the limiter could be bypassed entirely and used
+  to spend another client's budget. `TRUSTED_PROXY_HOPS` (default 1) says how
+  far from the right to count, and `NewRateLimiter` takes it.
+- **A cooldown only lets back in the key that released the handle itself**
+  (`lastIdentityKey = caller AND releasedBy = 'owner'`). An operator release
+  carrying a cooldown previously parked the handle against everyone *except* the
+  key the operator was removing. `lastIdentityKey` is left alone, so the row
+  stays an audit record.
+- **`ClaimUnchanged` compares the certificate**, not just serial and `issuedAt`:
+  the old rule answered `200` with the submitted document for an edit the
+  registry discarded.
+- **Replaying the owner tombstone a row already carries is a `200` no-op**
+  rather than `404`. `RunHandleStoreTests`'s double-release case is unchanged —
+  it releases with a *newer* `issuedAt`, which is still not found.
+- **A malformed release** (owner set, no `issuedAt`) is `ErrInvalidRelease` on
+  every backend, rather than a plain error on Mongo and `ErrStaleCertificate` on
+  the fake.
+- **A claim refused while the diagnosis finds no conflict retries once**
+  (`ErrClaimRaced`) instead of surfacing a driver error as `500`.
+- **A zero `HandleMatch.Mode` is the anchored search on both backends**; Mongo
+  read it as a substring search.
+- **Availability answers `stale`** for a released row whose `issuedAt` is not yet
+  past, instead of calling it free.
+- **The mount decision lives in `cmd/server/lookup.go`** (`checkLookupBackend`,
+  `lookupRegistry`, `mountLookup`) so the feature-off and Mongo-only rules have
+  tests; `main` only calls them.

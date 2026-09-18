@@ -39,7 +39,7 @@ var (
 // AvailabilityResponse is the body of GET /api/handle/available/{handle}.
 type AvailabilityResponse struct {
 	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"` // taken | too_similar | reserved | invalid | cooldown
+	Reason    string `json:"reason,omitempty"` // taken | too_similar | reserved | invalid | cooldown | stale
 }
 
 // EnableLookup turns the lookup feature on. The handle registry is passed
@@ -166,7 +166,8 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_CERTIFICATE", "Could not read the request body.")
 		return
 	}
-	p, err := profilecert.Parse(r.Context(), body, s.lookup.Domain)
+	now := s.clock()
+	p, err := profilecert.Parse(r.Context(), body, s.lookup.Domain, now)
 	if errors.Is(err, profilecert.ErrWrongDomain) {
 		writeError(w, http.StatusBadRequest, "ERR_WRONG_DOMAIN", "paymail field must end with @"+s.lookup.Domain)
 		return
@@ -184,12 +185,11 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := s.clock()
 	if p.Released {
 		until := now.Add(s.lookup.Cooldown)
 		err := s.handles.ReleaseHandle(r.Context(), storage.HandleRelease{
 			Handle: p.Handle, Owner: &p.IdentityKey, IssuedAt: &p.IssuedAt,
-			ReleasedBy: "owner", CooldownUntil: &until, Now: now,
+			ReleasedBy: storage.ReleasedByOwner, CooldownUntil: &until, Now: now,
 		})
 		// The registry reports "you are not the owner" as ErrHandleTaken, which
 		// on the claim path reads as "someone beat you to it". Same status and
@@ -361,13 +361,19 @@ func (s *Server) unavailableReason(ctx context.Context, handle string) (string, 
 	if err != nil || rec == nil {
 		return "", err
 	}
+	now := s.clock()
 	switch {
 	case rec.Handle != handle:
 		return "too_similar", nil
 	case rec.Active():
 		return "taken", nil
-	case rec.CooldownUntil != nil && rec.CooldownUntil.After(s.clock()):
+	case rec.CooldownUntil != nil && rec.CooldownUntil.After(now):
 		return "cooldown", nil
+	// A claim must beat the released row's issuedAt, so while that value is not
+	// yet in the past a certificate dated now cannot take the handle. Saying it
+	// is free would be advice no client can act on until the clock catches up.
+	case !rec.IssuedAt.Before(now):
+		return "stale", nil
 	}
 	return "", nil
 }

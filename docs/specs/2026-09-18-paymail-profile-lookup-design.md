@@ -47,7 +47,8 @@ trivial).
 | `HANDLE_COOLDOWN_DAYS` | Days before a released handle may be claimed by a different key | `30` |
 | `ADMIN_IDENTITY_KEYS` | Comma list of compressed pubkey hex allowed to call admin routes | empty (admin routes reject all) |
 | `LOOKUP_RATE_PER_MIN` | Per-IP request cap on public routes | `60` |
-| `TRUST_PROXY` | `true` → client IP taken from first `X-Forwarded-For` entry (set when behind a load balancer) | `false` |
+| `TRUST_PROXY` | `true` → client IP taken from `X-Forwarded-For` (set when behind a load balancer) | `false` |
+| `TRUSTED_PROXY_HOPS` | Proxies of your own in front of the process; the client's address is that many entries from the **right** of `X-Forwarded-For`. Proxies append rather than rewrite, so the leftmost entry is client-controlled and keying on it would let a client pick its own bucket or spend another's. Below `1` reads as `1`; too few entries falls back to the connection address | `1` |
 
 ## Profile certificate
 
@@ -61,7 +62,13 @@ Rules (server enforces on write; clients re-check all but DB state):
 3. Signature valid per go-sdk `Certificate.Verify()` (anyone counterparty).
 4. Fields are **plaintext** strings (no BRC-52 field encryption, no keyring).
    - Required `paymail`: exact `handle@PAYMAIL_DOMAIN`, lowercase.
-   - Required `issuedAt`: RFC 3339 UTC timestamp.
+   - Required `issuedAt`: RFC 3339 UTC timestamp, no more than five minutes
+     ahead of the server's clock. It is the registry's replay guard and every
+     later write must beat the stored value, so an unbounded one would settle
+     every future claim and leave the handle — and its look-alike class —
+     unclaimable by anybody, its owner included. The bound is on the instant,
+     not the written year: an offset as far back as `-23:59` denotes a later
+     moment than the same digits in UTC.
    - Optional `released`: `"true"` marks a tombstone (see Release).
    - Any other fields free-form (displayName, avatar, bio, …).
    - Limits: ≤ 32 fields, each value ≤ 1 KB, whole body ≤ 16 KB.
@@ -109,14 +116,18 @@ First-come-first-served comes from the unique indexes, never check-then-insert,
 and uses no multi-document transactions (works on every Atlas tier).
 `ClaimHandle` is three single-document writes in order — conditional owner
 update, conditional reclaim of a released document (`identityKey absent AND
-issuedAt < new AND (lastIdentityKey = caller OR cooldownUntil absent OR
-cooldownUntil <= now)`), insert — followed by a read-only diagnosis that maps
+issuedAt < new AND ((lastIdentityKey = caller AND releasedBy = 'owner') OR
+cooldownUntil absent OR cooldownUntil <= now)`), insert — followed by a read-only diagnosis that maps
 the failure to `ErrHandleTaken`, `ErrHandleTooSimilar`, `ErrKeyHasHandle`,
 `ErrHandleCooldown` or `ErrStaleCertificate`. A resubmission with the stored
-`serialNumber` and `issuedAt` by the same key is a no-op.
+`serialNumber`, `issuedAt` and certificate by the same key is a no-op; the same
+serial and `issuedAt` over a different document is a new certificate reusing a
+serial rule 6 forbids it to reuse, and is stale.
 
 Search uses anchored, `regexp.QuoteMeta`-escaped `$regex` (prefix tiers walk the
-`_id` / `skeleton` indexes; the substring tier is a bounded scan, limit 10).
+`_id` / `skeleton` indexes; the substring tier's regex is unanchored, so it
+walks the `_id` index to the end whenever fewer than 10 rows match — index-only,
+no documents fetched, and linear in registry size).
 User input never reaches a query as a raw pattern, operator document or field
 name. Atlas Search is a possible later upgrade, out of scope.
 
@@ -144,7 +155,11 @@ Outcomes:
   strictly greater than the row's stored value. `201`.
 - A key that wants a different handle must tombstone its current one first
   (`ERR_KEY_HAS_HANDLE` otherwise).
-- Resubmission with the stored `serialNumber` and `issuedAt` by the same key → `200` no-op.
+- Resubmission of the stored certificate (same `serialNumber`, `issuedAt` and
+  document) by the same key → `200` no-op. So is replaying the owner tombstone a
+  row already carries, so a client whose response was lost can retry.
+- A certificate dated more than five minutes ahead of the server →
+  `400 ERR_INVALID_CERTIFICATE`.
 
 Errors (`writeError` convention): `400 ERR_INVALID_CERTIFICATE`,
 `400 ERR_INVALID_HANDLE`, `400 ERR_WRONG_DOMAIN`, `409 ERR_HANDLE_TAKEN`,
@@ -158,7 +173,10 @@ a victim's fresh cert registers exactly what the victim signed.
 
 ### `GET /api/handle/{query}` — search (capability `0ace65da5987`)
 `{query}` is whatever the user has typed: `deg`, `deggen`, `deggen@example.com`.
-Lowercased; `@domain` suffix stripped (different domain → `[]`). Min length 2.
+Lowercased; `@domain` suffix stripped. A domain still being typed is a prefix of
+the configured one and is accepted; a domain that is not → `[]`. Min length 2,
+max 32 — the longest a handle can be, and an unbounded query would reach the
+substring tier as a pattern no row can match.
 
 Response: `200`, JSON array of certificates (possibly empty), max 10, ranked:
 1. exact handle
@@ -174,7 +192,9 @@ vector).
 or `404 ERR_HANDLE_NOT_FOUND`. Per-host only; no cross-domain index.
 
 ### `GET /api/handle/available/{handle}`
-`200 {"available":bool,"reason":"taken|too_similar|reserved|invalid|cooldown"}`.
+`200 {"available":bool,"reason":"taken|too_similar|reserved|invalid|cooldown|stale"}`.
+`stale` is a released row whose stored `issuedAt` is not yet in the past: a
+certificate dated now cannot beat it, so the handle is not claimable yet.
 Advisory only; `PUT` is the source of truth.
 
 ### `POST {prefix}/admin/handle/release` — operator release (BRC-104)
@@ -183,7 +203,11 @@ On the existing authed mux. Caller identity (`getIdentityKey`) must be in
 `{"handle":"…","skipCooldown":true}`. For lost-key recovery after out-of-band
 KYC. Sets row released with `releasedBy = <admin key>`; `skipCooldown` (default
 true) leaves `cooldownUntil` NULL so the user's new key can claim immediately.
-Every call logged with admin key, handle, previous identity key.
+`skipCooldown: false` quarantines the handle from everyone, the key just
+removed included — `releasedBy` is not `'owner'`, so the reclaim rule above
+grants that key nothing. Every call logged with admin key, handle, previous
+identity key; `lastIdentityKey` keeps naming the removed key, so the row is an
+audit record too.
 
 ## Client verification (normative for BRFC docs)
 
@@ -219,6 +243,8 @@ cert). Operator cannot forge profile fields or rebind a cert to another handle.
 - BRFC id derivation matches constants.
 - `profilecert`: bad sig, subject≠certifier, wrong type, wrong domain, missing
   fields, oversize, non-zero revocation outpoint.
+- `issuedAt` bounded against the server clock: the allowance itself registers,
+  a second past it, a year and the last representable instant do not.
 - Handler tests with real go-sdk-signed certs: register, update, stale issuedAt,
   same serial, tombstone, reclaim by same key inside cooldown, reclaim by other
   key blocked then allowed, second handle for same key, similar handle,

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bsv-blockchain/go-sdk/auth/certificates"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
 
@@ -60,7 +61,7 @@ func TestParse_Valid(t *testing.T) {
 		strings.Repeat("n", maxFieldName-1): "v",
 	})
 
-	p, err := Parse(context.Background(), body, domain)
+	p, err := Parse(context.Background(), body, domain, at)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestParse_Valid(t *testing.T) {
 	}
 	// The canonical JSON is what later tasks store and serve, so re-parsing it
 	// must yield the same profile.
-	again, err := Parse(context.Background(), []byte(p.JSON), domain)
+	again, err := Parse(context.Background(), []byte(p.JSON), domain, at)
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -110,12 +111,13 @@ func TestParse_CanonicalJSONNotEscaped(t *testing.T) {
 	for i := 0; i < 14; i++ { // 14 KB of '<' is ~86 KB once escaped
 		extra["f"+strconv.Itoa(i)] = strings.Repeat("<", maxFieldValue)
 	}
-	body := wireJSON(t, certtest.Profile(t, key, "deggen", domain, time.Now(), extra))
+	now := time.Now()
+	body := wireJSON(t, certtest.Profile(t, key, "deggen", domain, now, extra))
 	if len(body) > MaxBody {
 		t.Fatalf("test body = %d bytes, want <= %d", len(body), MaxBody)
 	}
 
-	p, err := Parse(context.Background(), body, domain)
+	p, err := Parse(context.Background(), body, domain, now)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestParse_CanonicalJSONNotEscaped(t *testing.T) {
 	if !strings.Contains(p.JSON, strings.Repeat("<", maxFieldValue)) {
 		t.Error("canonical JSON escaped the field values")
 	}
-	if _, err := Parse(context.Background(), []byte(p.JSON), domain); err != nil {
+	if _, err := Parse(context.Background(), []byte(p.JSON), domain, now); err != nil {
 		t.Errorf("re-parse of canonical JSON: %v", err)
 	}
 }
@@ -134,19 +136,103 @@ func TestParse_CanonicalJSONNotEscaped(t *testing.T) {
 // domain when the caller passes none.
 func TestParse_NoDomain(t *testing.T) {
 	key := newKey(t)
-	body := certtest.Profile(t, key, "deggen", domain, time.Now(), nil)
-	if _, err := Parse(context.Background(), body, ""); !errors.Is(err, ErrInvalid) {
+	now := time.Now()
+	body := certtest.Profile(t, key, "deggen", domain, now, nil)
+	if _, err := Parse(context.Background(), body, "", now); !errors.Is(err, ErrInvalid) {
 		t.Errorf("err = %v, want ErrInvalid", err)
 	}
 }
 
+// A tombstone is the one field whose value destroys a registration, so only the
+// exact string may carry it: a client that spells the field out on every
+// publish must not release the handle it is registering.
 func TestParse_Released(t *testing.T) {
 	key := newKey(t)
-	body := certtest.Profile(t, key, "deggen", domain, time.Now(), map[string]string{"released": "true"})
-	p, err := Parse(context.Background(), body, domain)
-	if err != nil || !p.Released {
-		t.Fatalf("Released = %v, err = %v", p != nil && p.Released, err)
+	now := time.Now()
+	ctx := context.Background()
+
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{
+		{"true", true},
+		{"false", false}, {"0", false}, {"1", false}, {"no", false}, {"yes", false},
+		{"TRUE", false}, {"True", false}, {" true", false}, {"true ", false}, {"", false},
+	} {
+		t.Run("released="+strconv.Quote(c.value), func(t *testing.T) {
+			body := certtest.Profile(t, key, "deggen", domain, now, map[string]string{"released": c.value})
+			p, err := Parse(ctx, body, domain, now)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if p.Released != c.want {
+				t.Errorf("Released = %v, want %v", p.Released, c.want)
+			}
+		})
 	}
+	t.Run("field absent", func(t *testing.T) {
+		p, err := Parse(ctx, certtest.Profile(t, key, "deggen", domain, now, nil), domain, now)
+		if err != nil || p.Released {
+			t.Fatalf("Released = %v, err = %v", p != nil && p.Released, err)
+		}
+	})
+}
+
+// issuedAt is the registry's replay guard, and every later write has to beat the
+// stored value, so a certificate from the future is not merely early: it settles
+// every claim that handle will ever see.
+func TestParse_RejectsFutureIssuedAt(t *testing.T) {
+	key := newKey(t)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	at := func(d time.Duration) time.Time { return now.Add(d) }
+	for _, c := range []struct {
+		name     string
+		issuedAt time.Time
+		ok       bool
+	}{
+		{"an hour old", at(-time.Hour), true},
+		{"exactly now", now, true},
+		{"the whole skew allowance", at(MaxClockSkew), true},
+		{"a second past the allowance", at(MaxClockSkew + time.Second), false},
+		{"a day ahead", at(24 * time.Hour), false},
+		{"a century ahead", now.AddDate(100, 0, 0), false},
+		// The last instant RFC 3339's four-digit year can spell: a row stamped
+		// with it can never be beaten, so nothing may ever store it.
+		{"the end of representable time", time.Date(9999, 12, 31, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := certtest.Profile(t, key, "deggen", domain, c.issuedAt, nil)
+			_, err := Parse(ctx, body, domain, now)
+			if c.ok && err != nil {
+				t.Fatalf("Parse = %v, want accepted", err)
+			}
+			if !c.ok && !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Parse = %v, want ErrInvalid", err)
+			}
+		})
+	}
+
+	// A negative offset denotes an instant later than the same digits in UTC, so
+	// the bound has to be on the instant rather than on how the date is written.
+	t.Run("late instant behind an offset", func(t *testing.T) {
+		c := certtest.Build(t, key, map[string]string{
+			"paymail": "deggen@" + domain, "issuedAt": "9999-12-31T23:59:59.999-23:59",
+		})
+		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain, now); !errors.Is(err, ErrInvalid) {
+			t.Errorf("err = %v, want ErrInvalid", err)
+		}
+	})
+
+	// A caller that forgets the clock rejects everything rather than trusting
+	// whatever a certificate claims.
+	t.Run("zero clock accepts nothing", func(t *testing.T) {
+		body := certtest.Profile(t, key, "deggen", domain, now, nil)
+		if _, err := Parse(ctx, body, domain, time.Time{}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("err = %v, want ErrInvalid", err)
+		}
+	})
 }
 
 func TestParse_Rejects(t *testing.T) {
@@ -174,11 +260,13 @@ func TestParse_Rejects(t *testing.T) {
 		want error
 	}{
 		{"not json", []byte("{"), ErrInvalid},
-		{"oversize", append(certtest.Profile(t, key, "deggen", domain, now, nil), make([]byte, MaxBody)...), ErrInvalid},
+		// Trailing bytes that are not JSON: the decoder rejects these whatever
+		// the body bound does, which is why the bound has its own case below.
+		{"trailing junk", append(certtest.Profile(t, key, "deggen", domain, now, nil), make([]byte, 16)...), ErrInvalid},
 		{"bad signature", tamper(func(m map[string]any) {
 			m["fields"].(map[string]any)["displayName"] = "Mallory"
 		}), ErrInvalid},
-		{"subject != certifier", tamper(func(m map[string]any) {
+		{"tampered subject", tamper(func(m map[string]any) {
 			m["subject"] = other.PubKey().ToDERHex()
 		}), ErrInvalid},
 		// An absent key (unlike a null one) never reaches PublicKey.UnmarshalJSON,
@@ -216,23 +304,59 @@ func TestParse_Rejects(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := Parse(ctx, c.body, domain); !errors.Is(err, c.want) {
+			if _, err := Parse(ctx, c.body, domain, now); !errors.Is(err, c.want) {
 				t.Errorf("err = %v, want %v", err, c.want)
 			}
 		})
 	}
 
+	// Rule 2 is the whole authorisation model of the write route: the subject is
+	// the identity key the handle is bound to. Tampering with a signed body
+	// cannot pin it — the signature fails either way — so the case has to be a
+	// certificate somebody else really issued about this key, which verifies.
+	t.Run("third party issued", func(t *testing.T) {
+		c := certtest.Build(t, key, map[string]string{
+			"paymail": "deggen@" + domain, "issuedAt": now.UTC().Format(time.RFC3339),
+		})
+		body := certtest.Sign(t, other, c) // Sign replaces the certifier with the signer
+		var signed certificates.Certificate
+		if err := json.Unmarshal(body, &signed); err != nil {
+			t.Fatal(err)
+		}
+		if signed.Subject.IsEqual(&signed.Certifier) {
+			t.Fatal("test body is self-signed; it cannot pin subject == certifier")
+		}
+		if err := signed.Verify(ctx); err != nil {
+			t.Fatalf("test body must be signature-valid or it proves nothing: %v", err)
+		}
+		if _, err := Parse(ctx, body, domain, now); !errors.Is(err, ErrInvalid) {
+			t.Errorf("err = %v, want ErrInvalid", err)
+		}
+	})
+
+	// Over the cap on the wire, small once canonicalised: only the body bound
+	// can refuse it, so it fails the moment that bound stops being applied.
+	t.Run("oversize", func(t *testing.T) {
+		body := append(bytes.Repeat([]byte(" "), MaxBody), certtest.Profile(t, key, "deggen", domain, now, nil)...)
+		if len(body) <= MaxBody {
+			t.Fatalf("test body = %d bytes, want more than %d", len(body), MaxBody)
+		}
+		if _, err := Parse(ctx, body, domain, now); !errors.Is(err, ErrInvalid) {
+			t.Errorf("err = %v, want ErrInvalid", err)
+		}
+	})
+
 	t.Run("wrong type", func(t *testing.T) {
 		c := certtest.Build(t, key, map[string]string{"paymail": "deggen@" + domain, "issuedAt": now.UTC().Format(time.RFC3339)})
 		c.Type = wallet.StringBase64(otherType)
-		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain); !errors.Is(err, ErrInvalid) {
+		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain, now); !errors.Is(err, ErrInvalid) {
 			t.Errorf("err = %v, want ErrInvalid", err)
 		}
 	})
 	t.Run("non-zero revocation outpoint", func(t *testing.T) {
 		c := certtest.Build(t, key, map[string]string{"paymail": "deggen@" + domain, "issuedAt": now.UTC().Format(time.RFC3339)})
 		c.RevocationOutpoint.Index = 1
-		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain); !errors.Is(err, ErrInvalid) {
+		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain, now); !errors.Is(err, ErrInvalid) {
 			t.Errorf("err = %v, want ErrInvalid", err)
 		}
 	})
@@ -241,7 +365,7 @@ func TestParse_Rejects(t *testing.T) {
 	t.Run("short serialNumber", func(t *testing.T) {
 		c := certtest.Build(t, key, map[string]string{"paymail": "deggen@" + domain, "issuedAt": now.UTC().Format(time.RFC3339)})
 		c.SerialNumber = wallet.StringBase64(base64.StdEncoding.EncodeToString([]byte("a")))
-		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain); !errors.Is(err, ErrInvalid) {
+		if _, err := Parse(ctx, certtest.Sign(t, key, c), domain, now); !errors.Is(err, ErrInvalid) {
 			t.Errorf("err = %v, want ErrInvalid", err)
 		}
 	})
@@ -256,7 +380,7 @@ func TestParse_Rejects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := certtest.Build(t, key, map[string]string{"paymail": "deggen@" + domain, "issuedAt": now.UTC().Format(time.RFC3339)})
 			c.SerialNumber = wallet.StringBase64(serial)
-			if _, err := Parse(ctx, certtest.Sign(t, key, c), domain); !errors.Is(err, ErrInvalid) {
+			if _, err := Parse(ctx, certtest.Sign(t, key, c), domain, now); !errors.Is(err, ErrInvalid) {
 				t.Errorf("err = %v, want ErrInvalid", err)
 			}
 		})

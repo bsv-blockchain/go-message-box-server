@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -71,7 +72,18 @@ func (f *fakeStore) GetHandleByIdentityKey(_ context.Context, identityKey string
 	return copyHandle(f.getByKeyLocked(identityKey)), nil
 }
 
+// ClaimHandle retries a claim that lost to a concurrent release exactly as the
+// Mongo backend does: tryClaim and the diagnosis take the lock separately, so
+// the row a write was refused for can be gone by the time the reason is read.
 func (f *fakeStore) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
+	res, err := f.claimOnce(ctx, c)
+	if errors.Is(err, storage.ErrClaimRaced) {
+		return f.claimOnce(ctx, c)
+	}
+	return res, err
+}
+
+func (f *fakeStore) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
 	if res, ok := f.tryClaim(c); ok {
 		return res, nil
 	}
@@ -99,7 +111,11 @@ func (f *fakeStore) tryClaim(c storage.HandleClaim) (storage.ClaimResult, bool) 
 		return 0, false
 	}
 	if rec != nil {
-		free := rec.LastIdentityKey == c.IdentityKey || rec.CooldownUntil == nil || !rec.CooldownUntil.After(c.Now)
+		// Only a handle its owner gave up lets that owner back in early; after an
+		// operator release the removed key waits like everyone else.
+		ownGiveUp := c.IdentityKey != "" && rec.LastIdentityKey == c.IdentityKey &&
+			rec.ReleasedBy != nil && *rec.ReleasedBy == storage.ReleasedByOwner
+		free := ownGiveUp || rec.CooldownUntil == nil || !rec.CooldownUntil.After(c.Now)
 		// The reclaim writes the claim's skeleton, so it meets the unique index
 		// exactly as an insert does.
 		if !rec.IssuedAt.Before(c.IssuedAt) || !free || f.skeletonTakenLocked(c.Skeleton, c.Handle) {
@@ -123,6 +139,9 @@ func (f *fakeStore) tryClaim(c storage.HandleClaim) (storage.ClaimResult, bool) 
 }
 
 func (f *fakeStore) ReleaseHandle(ctx context.Context, r storage.HandleRelease) error {
+	if err := storage.ValidateRelease(r); err != nil {
+		return err
+	}
 	if f.tryRelease(r) {
 		return nil
 	}
@@ -139,7 +158,7 @@ func (f *fakeStore) tryRelease(r storage.HandleRelease) bool {
 		return false
 	}
 	if r.Owner != nil {
-		if *rec.IdentityKey != *r.Owner || r.IssuedAt == nil || !rec.IssuedAt.Before(*r.IssuedAt) {
+		if *rec.IdentityKey != *r.Owner || !rec.IssuedAt.Before(*r.IssuedAt) {
 			return false
 		}
 		// The tombstone advances the replay guard; the row keeps it once released.

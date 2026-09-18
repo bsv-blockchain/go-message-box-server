@@ -13,6 +13,7 @@ import (
 type RateLimiter struct {
 	perMinute  int
 	trustProxy bool
+	hops       int // trusted proxies in front of this process, counted from the right
 	now        func() time.Time
 
 	mu     sync.Mutex
@@ -20,19 +21,32 @@ type RateLimiter struct {
 	counts map[string]int
 }
 
-// NewRateLimiter returns a limiter; perMinute <= 0 disables it.
-func NewRateLimiter(perMinute int, trustProxy bool) *RateLimiter {
-	return &RateLimiter{perMinute: perMinute, trustProxy: trustProxy, now: time.Now, counts: map[string]int{}}
+// NewRateLimiter returns a limiter; perMinute <= 0 disables it. hops is how
+// many trusted proxies sit in front of this process when trustProxy is set;
+// fewer than one is read as one.
+func NewRateLimiter(perMinute int, trustProxy bool, hops int) *RateLimiter {
+	if hops < 1 {
+		hops = 1
+	}
+	return &RateLimiter{perMinute: perMinute, trustProxy: trustProxy, hops: hops, now: time.Now, counts: map[string]int{}}
 }
 
 func (l *RateLimiter) clientIP(r *http.Request) string {
 	if l.trustProxy {
-		// The header is client-controlled and becomes a map key, so it is only
-		// honoured when it parses as an address: that caps the key at 45 bytes
-		// and folds the textual forms of one IPv6 address into one bucket.
-		// Anything else falls through to the connection address.
-		if first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ","); first != "" {
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+		// Proxies append to X-Forwarded-For, they do not rewrite it: whatever the
+		// client sent stays leftmost and each hop adds the address it accepted the
+		// connection from. So the only entry this server has any reason to believe
+		// is hops from the right — taking the leftmost would let every request
+		// nominate its own bucket, and let one client exhaust another's.
+		//
+		// The value becomes a map key, so it is only honoured when it parses as an
+		// address: that caps the key at 45 bytes and folds the textual forms of one
+		// IPv6 address into one bucket. Anything else, including a header with
+		// fewer entries than there are hops, falls through to the connection
+		// address — which is at worst the nearest proxy, so the limit over-counts
+		// rather than letting traffic past.
+		if parts := strings.Split(r.Header.Get("X-Forwarded-For"), ","); len(parts) >= l.hops {
+			if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-l.hops])); ip != nil {
 				return ip.String()
 			}
 		}

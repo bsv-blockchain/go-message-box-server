@@ -19,6 +19,14 @@ import (
 const (
 	// Type is base64(SHA-256("public profile lookup")).
 	Type = "SbatVXXssDW3AO0J9bxIljkHGbPBGCVAXg94gXFf0cE="
+	// MaxClockSkew is how far ahead of the server a certificate may be dated.
+	// issuedAt is the registry's replay guard: every later write must beat the
+	// stored value, so a certificate from the far future does not just win its
+	// own race, it settles every future one and leaves the handle — and its
+	// whole look-alike class — unclaimable by anybody, its owner included.
+	// Bounding it here costs an honest client with a fast clock a retry and
+	// makes that state unreachable.
+	MaxClockSkew = 5 * time.Minute
 	// MaxBody bounds the serialized certificate.
 	MaxBody       = 16384
 	maxFields     = 32
@@ -50,8 +58,10 @@ func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
 
-// Parse verifies body as a profile certificate for domain.
-func Parse(ctx context.Context, body []byte, domain string) (*Profile, error) {
+// Parse verifies body as a profile certificate for domain. now is the server's
+// clock, which issuedAt is bounded against; the zero time accepts nothing, so a
+// caller that forgets it fails closed.
+func Parse(ctx context.Context, body []byte, domain string, now time.Time) (*Profile, error) {
 	// Fail closed: without a domain every paymail would be for another server,
 	// and one whose domain part is empty would match.
 	if domain == "" {
@@ -115,6 +125,12 @@ func Parse(ctx context.Context, body []byte, domain string) (*Profile, error) {
 	issuedAt, err := time.Parse(time.RFC3339Nano, string(c.Fields["issuedAt"]))
 	if err != nil {
 		return nil, invalid("issuedAt field must be RFC 3339")
+	}
+	// The bound is on the instant, not the written year: RFC 3339 lets a
+	// timestamp carry an offset as far back as -23:59, so a text that reads like
+	// the last representable moment can denote a later one still.
+	if issuedAt.After(now.Add(MaxClockSkew)) {
+		return nil, invalid("issuedAt is more than %s ahead of this server", MaxClockSkew)
 	}
 
 	// Not json.Marshal: it escapes '<', '>' and '&' as six bytes each, and

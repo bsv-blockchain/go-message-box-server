@@ -48,6 +48,11 @@ func TestAdminReleaseHandle(t *testing.T) {
 		t.Errorf("releasedBy = %v (err %v), want %s", rec, err, mockIdentityKey)
 	}
 	wantStatus(t, e.put(alice, "deggen", e.advance(time.Minute), nil), 409, "ERR_HANDLE_COOLDOWN")
+	// bob is the key the operator just removed. A cooldown an operator asks for
+	// is a quarantine on the handle, so it binds bob too — the alternative is a
+	// window in which the only party who may take the handle back is the one
+	// being removed from it.
+	wantStatus(t, e.put(bob, "deggen", e.advance(time.Minute), nil), 409, "ERR_HANDLE_COOLDOWN")
 
 	// The no-auth route wrapper rejects.
 	w := httptest.NewRecorder()

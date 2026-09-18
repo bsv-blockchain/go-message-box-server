@@ -13,7 +13,7 @@ func TestLoad_Lookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PaymailDomain != "" || cfg.HandleCooldown != 30*24*time.Hour || cfg.LookupRatePerMin != 60 || cfg.TrustProxy || len(cfg.AdminIdentityKeys) != 0 {
+	if cfg.PaymailDomain != "" || cfg.HandleCooldown != 30*24*time.Hour || cfg.LookupRatePerMin != 60 || cfg.TrustProxy || cfg.TrustedProxyHops != 1 || len(cfg.AdminIdentityKeys) != 0 {
 		t.Errorf("defaults = %+v", cfg)
 	}
 
@@ -39,6 +39,61 @@ func TestLoad_Lookup(t *testing.T) {
 	}
 	if len(cfg.AdminIdentityKeys) != 2 || cfg.AdminIdentityKeys[0] != adminKeyA || cfg.AdminIdentityKeys[1] != adminKeyB {
 		t.Errorf("admins = %v", cfg.AdminIdentityKeys)
+	}
+}
+
+// The limiter is the only control in front of the public routes, so a setting
+// it cannot make sense of has to leave the limit on. Exactly zero is the one
+// value that turns it off, and the README says so in those words.
+func TestLoad_LookupRatePerMin(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	for _, c := range []struct {
+		value string
+		want  int
+	}{
+		{"5", 5},
+		{"0", 0},
+		{"-1", 60},
+		{"-100", 60},
+		{"off", 60},
+		{"", 60},
+	} {
+		t.Setenv("LOOKUP_RATE_PER_MIN", c.value)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LookupRatePerMin != c.want {
+			t.Errorf("LOOKUP_RATE_PER_MIN=%q gave %d, want %d", c.value, cfg.LookupRatePerMin, c.want)
+		}
+	}
+}
+
+// A hop count below one would count from the right end of a header the client
+// controls outright, so it is read as one proxy rather than none.
+func TestLoad_TrustedProxyHops(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	for _, c := range []struct {
+		value string
+		want  int
+	}{
+		{"2", 2},
+		{"1", 1},
+		{"0", 1},
+		{"-3", 1},
+		{"two", 1},
+		{"", 1},
+	} {
+		t.Setenv("TRUSTED_PROXY_HOPS", c.value)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.TrustedProxyHops != c.want {
+			t.Errorf("TRUSTED_PROXY_HOPS=%q gave %d, want %d", c.value, cfg.TrustedProxyHops, c.want)
+		}
 	}
 }
 

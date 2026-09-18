@@ -112,12 +112,26 @@ func (s *Store) claimWriteErr(ctx context.Context, c storage.HandleClaim, err er
 	return storage.DiagnoseClaim(ctx, s, c, err)
 }
 
-// ClaimHandle implements storage.HandleStore: owner update, reclaim, insert —
-// one conditional write each, with the unique indexes deciding every race. None
-// of them can half-apply, so whatever the registry ends up in is a state some
+// ClaimHandle implements storage.HandleStore.
+//
+// A claim that lost to a concurrent release is retried once: the row its insert
+// collided with was gone again by the time the diagnosis read it, so there is
+// nothing to report and the second attempt sees the settled row. The claim
+// never applied, so the retry cannot double-write.
+func (s *Store) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
+	res, err := s.claimOnce(ctx, c)
+	if errors.Is(err, storage.ErrClaimRaced) {
+		return s.claimOnce(ctx, c)
+	}
+	return res, err
+}
+
+// claimOnce is one pass of the claim: owner update, reclaim, insert — one
+// conditional write each, with the unique indexes deciding every race. None of
+// them can half-apply, so whatever the registry ends up in is a state some
 // caller asked for; a write the registry rejects hands the explaining to
 // storage.DiagnoseClaim rather than reading first and deciding.
-func (s *Store) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
+func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.ClaimResult, error) {
 	coll := s.db.Collection(handlesColl)
 	ts := now()
 	// c is a copy, so this pins the times the writes and the diagnosis below
@@ -146,20 +160,26 @@ func (s *Store) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage
 		return storage.ClaimUpdated, nil
 	}
 
-	// A released row is reclaimed by the key that held it, or by anyone once the
-	// cooldown has run out — at cooldownUntil itself, not a tick later. The
+	// A released row is reclaimed by the key that released it, or by anyone once
+	// the cooldown has run out — at cooldownUntil itself, not a tick later. The
 	// reclaim stores the claim's skeleton, not the one the row was created with,
 	// so it meets the look-alike constraint exactly like an insert does.
+	free := bson.A{
+		bson.M{"cooldownUntil": bson.M{"$exists": false}},
+		bson.M{"cooldownUntil": bson.M{"$lte": c.Now}},
+	}
+	if c.IdentityKey != "" {
+		// Only a handle its owner gave up lets that owner back in early. After an
+		// operator release the removed key waits with everyone else, so a cooldown
+		// an operator asks for is not a reservation for the key they removed.
+		free = append(bson.A{bson.M{"lastIdentityKey": c.IdentityKey, "releasedBy": storage.ReleasedByOwner}}, free...)
+	}
 	res, err = coll.UpdateOne(ctx,
 		bson.M{
 			"_id":         c.Handle,
 			"identityKey": bson.M{"$exists": false},
 			"issuedAt":    bson.M{"$lt": c.IssuedAt},
-			"$or": bson.A{
-				bson.M{"lastIdentityKey": c.IdentityKey},
-				bson.M{"cooldownUntil": bson.M{"$exists": false}},
-				bson.M{"cooldownUntil": bson.M{"$lte": c.Now}},
-			},
+			"$or":         free,
 		},
 		bson.M{
 			"$set": bson.M{
@@ -193,25 +213,28 @@ func (s *Store) ClaimHandle(ctx context.Context, c storage.HandleClaim) (storage
 // ReleaseHandle implements storage.HandleStore. The row is kept: its issuedAt
 // is the replay guard for the next claim and its skeleton stays reserved.
 //
-// lastIdentityKey keeps naming the key that just lost the handle, which is what
-// lets that key reclaim inside its own cooldown. An operator release carrying a
-// cooldown would therefore park the handle against everyone except the key it
-// removed — the reason the admin route leaves CooldownUntil nil.
+// lastIdentityKey keeps naming the key that just lost the handle. Paired with
+// releasedBy that is what lets a key back into the cooldown of a handle it gave
+// up itself, while leaving an operator's cooldown binding on everyone.
 func (s *Store) ReleaseHandle(ctx context.Context, r storage.HandleRelease) error {
+	if err := storage.ValidateRelease(r); err != nil {
+		return err
+	}
 	// The times the caller points at stay the caller's; only these copies are
-	// cut down to what the row stores.
+	// cut down to what the row stores — including the copy the diagnosis below
+	// compares against, or a sub-millisecond tombstone would never be
+	// recognised as the one already applied.
+	r.Now = msUTC(r.Now)
 	filter := bson.M{"_id": r.Handle, "identityKey": bson.M{"$exists": true}}
-	set := bson.M{"updatedAt": now(), "releasedAt": msUTC(r.Now), "releasedBy": r.ReleasedBy}
+	set := bson.M{"updatedAt": now(), "releasedAt": r.Now, "releasedBy": r.ReleasedBy}
 	unset := bson.M{"identityKey": "", "certificate": ""}
 
 	if r.Owner != nil {
-		if r.IssuedAt == nil {
-			return fmt.Errorf("owner release of %s without IssuedAt", r.Handle)
-		}
 		// The tombstone is itself a certificate: it must come from the owner and
 		// be newer than the one on the row, and it becomes the value a later
 		// claim is compared against.
 		issuedAt := msUTC(*r.IssuedAt)
+		r.IssuedAt = &issuedAt
 		filter["identityKey"] = *r.Owner
 		filter["issuedAt"] = bson.M{"$lt": issuedAt}
 		set["issuedAt"] = issuedAt
@@ -253,7 +276,10 @@ func (s *Store) FindHandles(ctx context.Context, m storage.HandleMatch) ([]stora
 	// pattern matching every handle starting with "d", and "a(b[" is not a
 	// syntax error the server has to reject.
 	pattern := regexp.QuoteMeta(m.Value)
-	if m.Mode == storage.HandleMatchPrefix {
+	// Anything but an explicit substring search is anchored, so a caller that
+	// leaves Mode at its zero value gets the narrower search on every backend
+	// rather than a prefix here and a substring there.
+	if m.Mode != storage.HandleMatchContains {
 		pattern = "^" + pattern
 	}
 

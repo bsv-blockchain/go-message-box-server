@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -112,6 +113,16 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		separateWrites()
 
 		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimUnchanged)
+		// A no-op is the stored certificate arriving again. The same serial and
+		// issuedAt over a different document is a new certificate reusing a
+		// serial, and reporting it unchanged would tell a client its edit was
+		// kept while the registry went on serving the old one.
+		edited := claim("deggen", "degen", alice, "s1", handleT0)
+		edited.Certificate = `{"serialNumber":"s1","displayName":"edited"}`
+		wantClaimErr(t, s, edited, storage.ErrStaleCertificate)
+		if rec, _ := s.GetHandle(ctx, "deggen"); rec == nil || rec.Certificate == nil || *rec.Certificate != `{"serialNumber":"s1"}` {
+			t.Errorf("stored certificate = %v, want the original", rec)
+		}
 		wantClaimErr(t, s, claim("deggen", "degen", alice, "s2", handleT0), storage.ErrStaleCertificate)
 		wantClaimErr(t, s, claim("deggen", "degen", alice, "s2", handleT0.Add(-time.Second)), storage.ErrStaleCertificate)
 		wantClaimErr(t, s, claim("deggen", "degen", alice, "s1", handleT0.Add(time.Second)), storage.ErrStaleCertificate)
@@ -145,9 +156,35 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "nobody", Owner: &a, IssuedAt: &relAt, ReleasedBy: "owner", Now: relAt}); !errors.Is(err, storage.ErrHandleNotFound) {
 			t.Fatalf("missing release err = %v", err)
 		}
+		// An owner release with no tombstone to compare is the caller's mistake,
+		// not a conflict the registry found, and every backend says so the same
+		// way rather than inventing a reason for it.
+		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", Owner: &a, ReleasedBy: "owner", Now: relAt}); !errors.Is(err, storage.ErrInvalidRelease) {
+			t.Fatalf("release without IssuedAt err = %v, want ErrInvalidRelease", err)
+		}
+		// The reclaim rule reads releasedBy to tell an owner's tombstone from an
+		// operator's, so an owner release filed under another name is refused
+		// rather than stored as something it is not.
+		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", Owner: &a, IssuedAt: &relAt, ReleasedBy: carol, Now: relAt}); !errors.Is(err, storage.ErrInvalidRelease) {
+			t.Fatalf("owner release recorded as an admin err = %v, want ErrInvalidRelease", err)
+		}
+		if r, _ := s.GetHandle(ctx, "deggen"); !r.Active() {
+			t.Fatal("a release the contract rejects must not touch the row")
+		}
 		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", Owner: &a, IssuedAt: &relAt, ReleasedBy: "owner", CooldownUntil: &until, Now: relAt}); err != nil {
 			t.Fatalf("release: %v", err)
 		}
+		// Replaying the tombstone the row already carries is the no-op a replayed
+		// claim is: a client whose response was lost retries and is told the
+		// release happened, not that its handle never existed.
+		applied, _ := s.GetHandle(ctx, "deggen")
+		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", Owner: &a, IssuedAt: &relAt, ReleasedBy: "owner", CooldownUntil: &until, Now: relAt.Add(time.Minute)}); err != nil {
+			t.Fatalf("replayed tombstone err = %v, want nil", err)
+		}
+		if again, _ := s.GetHandle(ctx, "deggen"); again.ReleasedAt == nil || !again.ReleasedAt.Equal(*applied.ReleasedAt) || !again.IssuedAt.Equal(applied.IssuedAt) {
+			t.Errorf("replayed tombstone rewrote the row: %+v, want %+v", again, applied)
+		}
+		// A different tombstone from the same owner is not that no-op.
 		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", Owner: &a, IssuedAt: &until, ReleasedBy: "owner", Now: until}); !errors.Is(err, storage.ErrHandleNotFound) {
 			t.Fatalf("double release err = %v", err)
 		}
@@ -266,6 +303,27 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		}
 	})
 
+	t.Run("OperatorCooldownBindsTheRemovedKey", func(t *testing.T) {
+		s := newStore(t)
+		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimCreated)
+		now := handleT0.Add(time.Hour)
+		until := now.Add(30 * 24 * time.Hour)
+		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "deggen", ReleasedBy: carol, CooldownUntil: &until, Now: now}); err != nil {
+			t.Fatalf("admin release: %v", err)
+		}
+		// lastIdentityKey still names the key the operator removed — the row is
+		// the audit trail — but a cooldown the operator asked for is a quarantine
+		// against everyone, not a reservation for the key being removed.
+		rec, _ := s.GetHandle(ctx, "deggen")
+		if rec.Active() || rec.LastIdentityKey != alice || rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(until) {
+			t.Fatalf("operator released row = %+v", rec)
+		}
+		wantClaimErr(t, s, claim("deggen", "degen", alice, "s2", now.Add(time.Minute)), storage.ErrHandleCooldown)
+		wantClaimErr(t, s, claim("deggen", "degen", bob, "s2", now.Add(time.Minute)), storage.ErrHandleCooldown)
+		// The quarantine ends for everyone at once.
+		mustClaim(t, s, claim("deggen", "degen", alice, "s3", until), storage.ClaimCreated)
+	})
+
 	t.Run("FindHandles", func(t *testing.T) {
 		s := newStore(t)
 		for i, h := range []struct{ handle, skeleton string }{
@@ -318,6 +376,10 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		// A limit that asks for nothing returns nothing; it is never "unlimited".
 		check("zero limit", find(storage.HandleFieldHandle, storage.HandleMatchPrefix, "deg", 0), []string{})
 		check("negative limit", find(storage.HandleFieldHandle, storage.HandleMatchPrefix, "deg", -1), []string{})
+		// A mode left unset is the narrower anchored search on every backend, so
+		// a tier added without one cannot be a prefix here and a substring there.
+		check("zero mode is anchored", find(storage.HandleFieldHandle, 0, "eggen", 10), []string{})
+		check("zero mode matches a prefix", find(storage.HandleFieldHandle, 0, "deg", 10), []string{"deg", "degas", "deggen"})
 	})
 
 	t.Run("ConcurrentClaimsOneWinner", func(t *testing.T) {
@@ -349,6 +411,44 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		}
 		if created != 1 {
 			t.Fatalf("%d claims created, want exactly 1", created)
+		}
+	})
+
+	// A claim that collides with a row an operator is releasing at that instant
+	// is refused by the write and then finds nothing to blame when it reads: the
+	// state it lost to is already gone. Either answer the registry can stand
+	// behind is fine — the handle was taken, or the claim now applies — but the
+	// backend must never hand the caller its own write error, which reads as a
+	// fault for a request the registry would have allowed.
+	t.Run("ConcurrentClaimAndRelease", func(t *testing.T) {
+		s := newStore(t)
+		named := []error{
+			storage.ErrHandleTaken, storage.ErrHandleTooSimilar, storage.ErrKeyHasHandle,
+			storage.ErrHandleCooldown, storage.ErrStaleCertificate,
+		}
+		for i := 0; i < 30; i++ {
+			handle := fmt.Sprintf("race%02d", i)
+			mustClaim(t, s, claim(handle, handle, fmt.Sprintf("02held%02d", i), "s1", handleT0), storage.ClaimCreated)
+
+			var wg sync.WaitGroup
+			var claimErr error
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, claimErr = s.ClaimHandle(ctx, claim(handle, handle, fmt.Sprintf("02want%02d", i), "s2", handleT0.Add(time.Hour)))
+			}()
+			go func() {
+				defer wg.Done()
+				_ = s.ReleaseHandle(ctx, storage.HandleRelease{Handle: handle, ReleasedBy: carol, Now: handleT0.Add(30 * time.Minute)})
+			}()
+			wg.Wait()
+
+			if claimErr == nil {
+				continue
+			}
+			if !slices.ContainsFunc(named, func(e error) bool { return errors.Is(claimErr, e) }) {
+				t.Fatalf("round %d: claim racing a release = %v; want nil or a named conflict", i, claimErr)
+			}
 		}
 	})
 }

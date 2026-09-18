@@ -80,9 +80,8 @@ func main() {
 	// from the config alone, so refuse before anything is opened: a
 	// misconfigured process in a crash loop should leave no database file, no
 	// wallet storage and no goroutine behind.
-	lookupEnabled := cfg.PaymailDomain != ""
-	if lookupEnabled && cfg.StorageBackend != "mongo" {
-		slog.Error("PAYMAIL_DOMAIN requires STORAGE_BACKEND=mongo", "backend", cfg.StorageBackend)
+	if err := checkLookupBackend(cfg); err != nil {
+		slog.Error("cannot serve the paymail profile lookup", "error", err)
 		os.Exit(1)
 	}
 
@@ -106,14 +105,10 @@ func main() {
 	// created so nothing is written or started if the backend turns out not to
 	// carry one. As with the fatal paths above, os.Exit skips the deferred
 	// Close: the process is dying before it ever listened.
-	var registry mbstorage.HandleStore
-	if lookupEnabled {
-		var ok bool
-		registry, ok = store.(mbstorage.HandleStore)
-		if !ok {
-			slog.Error("PAYMAIL_DOMAIN requires a storage backend with a handle registry", "backend", cfg.StorageBackend)
-			os.Exit(1)
-		}
+	registry, err := lookupRegistry(cfg, store)
+	if err != nil {
+		slog.Error("cannot serve the paymail profile lookup", "error", err)
+		os.Exit(1)
 	}
 
 	// initalize firebase
@@ -153,13 +148,8 @@ func main() {
 	mux.HandleFunc("GET "+prefix+"/permissions/list", srv.ListPermissions)
 	mux.HandleFunc("GET "+prefix+"/permissions/quote", srv.GetQuote)
 
-	if lookupEnabled {
-		srv.EnableLookup(handlers.LookupConfig{
-			Domain:    cfg.PaymailDomain,
-			Host:      cfg.PaymailHost,
-			Cooldown:  cfg.HandleCooldown,
-			AdminKeys: cfg.AdminIdentityKeys,
-		}, registry)
+	public := mountLookup(cfg, srv, registry)
+	if public != nil {
 		mux.HandleFunc("POST "+prefix+"/admin/handle/release", srv.AdminReleaseHandle)
 	}
 
@@ -180,8 +170,7 @@ func main() {
 	// Paymail profile lookup: public by design, so outside auth and payment.
 	// ServeMux picks the most specific pattern regardless of registration
 	// order, so these win over the catch-all below.
-	if lookupEnabled {
-		public := handlers.NewRateLimiter(cfg.LookupRatePerMin, cfg.TrustProxy).Wrap(srv.LookupRoutes())
+	if public != nil {
 		rootMux.Handle("/.well-known/bsvalias", public)
 		rootMux.Handle("/api/handle", public)
 		rootMux.Handle("/api/handle/", public)

@@ -125,15 +125,25 @@ docker compose --profile mongo up -d mongo
 | `PAYMAIL_HOST` | Public base URL used in capability templates, e.g. `https://mb.example.com` | required when domain set |
 | `HANDLE_COOLDOWN_DAYS` | Days before a released handle may be claimed by a different key | `30` |
 | `ADMIN_IDENTITY_KEYS` | Comma list of compressed pubkey hex allowed to call admin routes | empty (admin routes reject all) |
-| `LOOKUP_RATE_PER_MIN` | Per-IP cap, shared across all five public routes; `0` or less **disables** the limiter (it does not block traffic) | `60` |
-| `TRUST_PROXY` | `true` → client IP taken from first `X-Forwarded-For` entry (set when behind a load balancer) | `false` |
+| `LOOKUP_RATE_PER_MIN` | Per-IP cap, shared across all five public routes; exactly `0` **disables** the limiter (it does not block traffic). Any other value that is not a non-negative integer, a negative one included, falls back to the default | `60` |
+| `TRUST_PROXY` | `true` → client IP taken from `X-Forwarded-For` instead of the connection (set when behind a load balancer) | `false` |
+| `TRUSTED_PROXY_HOPS` | How many proxies of your own sit in front of this process; the client's address is counted that many entries from the right of `X-Forwarded-For`. Only read when `TRUST_PROXY=true`; values below `1` are read as `1` | `1` |
 
 The rate limiter is in-memory and therefore per-replica: three replicas behind
 one load balancer allow three times `LOOKUP_RATE_PER_MIN` between them. Behind a
 load balancer every request also arrives from the balancer's own address, so
-without `TRUST_PROXY=true` the entire fleet shares a single bucket. Only set it
-where a proxy really does rewrite `X-Forwarded-For`: otherwise a client picks
-its own bucket by sending the header itself.
+without `TRUST_PROXY=true` the entire fleet shares a single bucket.
+
+Set `TRUSTED_PROXY_HOPS` to the number of proxies you run in front of the
+server — one for a single load balancer, two for a CDN in front of it. Proxies
+*append* to `X-Forwarded-For` rather than rewriting it (AWS ALB, Google Cloud
+Load Balancing, Cloudflare and nginx's `$proxy_add_x_forwarded_for` all do), so
+the leftmost entry is whatever the client chose to send and only the entry your
+own nearest proxies appended means anything. Counting from the right is what
+stops a client picking a fresh bucket for every request, or spending another
+client's. A header with fewer entries than there are hops falls back to the
+connection address, which over-counts rather than letting traffic past — so a
+hop count that is too high is safe, and one that is too low is not.
 
 ### Routes
 

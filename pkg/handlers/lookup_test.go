@@ -15,6 +15,7 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
+	"github.com/bsv-blockchain/go-message-box-server/pkg/profilecert"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/profilecert/certtest"
 )
 
@@ -162,12 +163,12 @@ func TestPutHandle_Lifecycle(t *testing.T) {
 	// Conflicts. "deg.gen" folds to the skeleton of "deggen".
 	wantStatus(t, e.put(bob, "deggen", t0, nil), 409, "ERR_HANDLE_TAKEN")
 	wantStatus(t, e.put(bob, "deg.gen", t0, nil), 409, "ERR_HANDLE_TOO_SIMILAR")
-	wantStatus(t, e.put(alice, "another", t0.Add(time.Hour), nil), 409, "ERR_KEY_HAS_HANDLE")
+	wantStatus(t, e.put(alice, "another", t0.Add(2*time.Second), nil), 409, "ERR_KEY_HAS_HANDLE")
 	wantStatus(t, e.put(alice, "deggen", t0, nil), 409, "ERR_STALE_CERTIFICATE")
 
 	// Releasing a handle held by someone else shares ERR_HANDLE_TAKEN with a
 	// registration conflict, so the text has to say which one happened.
-	notOwner := e.put(bob, "deggen", t0.Add(time.Hour), map[string]string{"released": "true"})
+	notOwner := e.put(bob, "deggen", t0.Add(2*time.Second), map[string]string{"released": "true"})
 	wantStatus(t, notOwner, 409, "ERR_HANDLE_TAKEN")
 	wantDescription(t, notOwner, "only its owner can release it")
 
@@ -195,8 +196,12 @@ func TestPutHandle_Lifecycle(t *testing.T) {
 	wantStatus(t, e.do("GET", "/api/identityKey/"+bob.PubKey().ToDERHex(), nil), 404, "ERR_HANDLE_NOT_FOUND")
 	wantStatus(t, e.do("GET", "/api/identityKey/nothex", nil), 400, "ERR_INVALID_LOOKUP")
 
-	// Tombstone.
-	wantStatus(t, e.put(alice, "deggen", e.set(t0.Add(time.Hour)), map[string]string{"released": "true"}), 200, "")
+	// Tombstone. Replaying it is the no-op a replayed registration is: a client
+	// whose response was lost retries, and must not be told its handle never
+	// existed.
+	tombstone := certtest.Profile(t, alice, "deggen", testDomain, e.set(t0.Add(time.Hour)), map[string]string{"released": "true"})
+	wantStatus(t, e.do("PUT", "/api/handle", tombstone), 200, "")
+	wantStatus(t, e.do("PUT", "/api/handle", tombstone), 200, "")
 	wantStatus(t, e.do("GET", "/api/identityKey/"+alice.PubKey().ToDERHex(), nil), 404, "ERR_HANDLE_NOT_FOUND")
 	if w := e.do("GET", "/api/handle/deggen", nil); strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Errorf("search after release = %s", w.Body)
@@ -232,6 +237,13 @@ func TestPutHandle_Rejects(t *testing.T) {
 	wantStatus(t, e.put(key, "ab", now, nil), 400, "ERR_INVALID_HANDLE")
 	wantStatus(t, e.put(key, "deg+gen", now, nil), 400, "ERR_INVALID_HANDLE")
 	wantStatus(t, e.put(key, "adm1n", now, nil), 409, "ERR_HANDLE_RESERVED")
+
+	// issuedAt is the replay guard every later write has to beat, so a
+	// certificate from the future would settle this handle's claims for good.
+	// The allowance itself still registers: a client's clock is never exact.
+	wantStatus(t, e.put(key, "future", now.Add(time.Hour), nil), 400, "ERR_INVALID_CERTIFICATE")
+	wantStatus(t, e.put(key, "future", now.AddDate(100, 0, 0), nil), 400, "ERR_INVALID_CERTIFICATE")
+	wantStatus(t, e.put(key, "future", now.Add(profilecert.MaxClockSkew), nil), 201, "")
 
 	var m map[string]any
 	_ = json.Unmarshal(certtest.Profile(t, key, "deggen", testDomain, now, nil), &m)
@@ -292,6 +304,15 @@ func TestSearch(t *testing.T) {
 	}
 	// Substring tier needs three characters.
 	eq("two-char substring", search("_d"), []string{})
+
+	// The longest handle there can be is still a query; anything longer cannot
+	// match one, and without the bound it would reach the registry as an
+	// unanchored pattern scanned against every row.
+	longest := strings.Repeat("a", maxQueryLength)
+	wantStatus(t, e.put(testKey(t), longest, e.now(), nil), 201, "")
+	eq("longest allowed query", search(longest), []string{longest})
+	eq("over-long query", search(longest+"a"), []string{})
+	eq("far over-long query", search(strings.Repeat("b", 2000)), []string{})
 }
 
 func TestAvailable(t *testing.T) {
@@ -326,6 +347,39 @@ func TestAvailable(t *testing.T) {
 	check("deg.gen", false, "too_similar")
 	e.advance(31 * 24 * time.Hour)
 	check("deggen", true, "")
+}
+
+// The advisory answer has to agree with PUT. While a released row's issuedAt is
+// not yet in the past, a certificate dated now cannot beat it, so the handle is
+// not claimable however empty the row looks — and a caller told it is free has
+// no way to act on that.
+func TestAvailable_StaleWhileTheReplayGuardStands(t *testing.T) {
+	e := newLookupEnv(t)
+	e.srv.lookup.Cooldown = 0 // a cooldown would answer first and mask the guard
+	owner := testKey(t)
+
+	check := func(want bool, reason string) {
+		t.Helper()
+		w := e.do("GET", "/api/handle/available/deggen", nil)
+		wantStatus(t, w, 200, "")
+		var r AvailabilityResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &r)
+		if r.Available != want || r.Reason != reason {
+			t.Errorf("available = %+v, want %v %q", r, want, reason)
+		}
+	}
+
+	wantStatus(t, e.put(owner, "deggen", e.now(), nil), 201, "")
+	wantStatus(t, e.put(owner, "deggen", e.advance(time.Hour), map[string]string{"released": "true"}), 200, "")
+
+	// The tombstone's own issuedAt is the row's guard, so at this instant
+	// nothing can be issued that beats it.
+	check(false, "stale")
+	wantStatus(t, e.put(testKey(t), "deggen", e.now(), nil), 409, "ERR_STALE_CERTIFICATE")
+
+	e.advance(time.Millisecond)
+	check(true, "")
+	wantStatus(t, e.put(testKey(t), "deggen", e.now(), nil), 201, "")
 }
 
 func TestPutHandle_ConcurrentOneWinner(t *testing.T) {
