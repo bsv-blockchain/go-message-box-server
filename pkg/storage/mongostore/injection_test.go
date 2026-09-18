@@ -2,6 +2,8 @@ package mongostore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -24,6 +26,10 @@ import (
 // search, which puts the searcher's text under $regex: FindHandles runs it
 // through regexp.QuoteMeta first — and anchors the prefix tier itself — so a
 // pattern reaches the server with every metacharacter already escaped.
+//
+// The registry's writes (ClaimHandle, ReleaseHandle) are covered as well as its
+// reads: a filter that matched the wrong row there would overwrite or release
+// another key's handle rather than merely leak it.
 func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
@@ -191,6 +197,77 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 				if rec != nil {
 					t.Errorf("payload matched a %s record %+v, want nil", name, rec)
 				}
+			}
+		})
+	}
+
+	// The registry's writes filter on the same client strings. Parsed as a
+	// document, {"$ne": null} in the identityKey position would match the real
+	// owner's row, so an update would overwrite their certificate and a release
+	// would take their handle away. These run after the reads above because the
+	// last case stores rows whose handle is the payload itself.
+	later := issued.Add(time.Hour)
+	for i, payload := range payloads {
+		t.Run("ClaimHandle/"+payload, func(t *testing.T) {
+			// As the identity key, against the real handle.
+			_, err := s.(*Store).ClaimHandle(ctx, storage.HandleClaim{
+				Handle: realHandle, Skeleton: "degen", IdentityKey: payload,
+				Certificate: `{"serialNumber":"evil"}`, SerialNumber: "evil",
+				IssuedAt: later, Now: later,
+			})
+			if !errors.Is(err, storage.ErrHandleTaken) {
+				t.Errorf("payload as identity key: err = %v, want ErrHandleTaken", err)
+			}
+
+			// As the handle, it is stored and read back as that literal string.
+			key := fmt.Sprintf("02payloadkey%d", i)
+			res, err := s.(*Store).ClaimHandle(ctx, storage.HandleClaim{
+				Handle: payload, Skeleton: fmt.Sprintf("payloadskeleton%d", i), IdentityKey: key,
+				Certificate: `{"serialNumber":"p"}`, SerialNumber: "p",
+				IssuedAt: later, Now: later,
+			})
+			if err != nil || res != storage.ClaimCreated {
+				t.Fatalf("payload as handle: %v, %v; want ClaimCreated, nil", res, err)
+			}
+			rec, err := s.(*Store).GetHandle(ctx, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec == nil || rec.Handle != payload || rec.IdentityKey == nil || *rec.IdentityKey != key {
+				t.Errorf("payload handle read back as %+v", rec)
+			}
+		})
+
+		t.Run("ReleaseHandle/"+payload, func(t *testing.T) {
+			// As the owner, against the real handle.
+			owner := payload
+			err := s.(*Store).ReleaseHandle(ctx, storage.HandleRelease{
+				Handle: realHandle, Owner: &owner, IssuedAt: &later,
+				ReleasedBy: storage.ReleasedByOwner, Now: later,
+			})
+			if !errors.Is(err, storage.ErrHandleTaken) {
+				t.Errorf("payload as owner: err = %v, want ErrHandleTaken", err)
+			}
+
+			// As the handle of an operator release, which filters on nothing
+			// else. The previous subtest stored a row under this exact string,
+			// so exactly that row goes and the real one stays.
+			if err := s.(*Store).ReleaseHandle(ctx, storage.HandleRelease{
+				Handle: payload, ReleasedBy: "02operator", Now: later,
+			}); err != nil {
+				t.Fatalf("operator release of the payload's own row: %v", err)
+			}
+		})
+
+		t.Run("RealHandleUntouched/"+payload, func(t *testing.T) {
+			rec, err := s.(*Store).GetHandle(ctx, realHandle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec == nil || !rec.Active() || *rec.IdentityKey != realRecipient ||
+				rec.SerialNumber != "s1" || rec.Certificate == nil || *rec.Certificate != `{"serialNumber":"s1"}` ||
+				!rec.IssuedAt.Equal(issued) {
+				t.Errorf("real handle was disturbed: %+v", rec)
 			}
 		})
 	}
