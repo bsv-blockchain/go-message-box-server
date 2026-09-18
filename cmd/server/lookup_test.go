@@ -154,3 +154,38 @@ func TestMountLookup_ServesThePublicRoutes(t *testing.T) {
 		t.Errorf("rate limit = %d then %d, want 200 then 429", first.Code, second.Code)
 	}
 }
+
+// TestMountLookup_ClientIPHeader proves cfg.ClientIPHeader reaches the
+// RateLimiter that mountLookup builds: two requests with different RemoteAddrs
+// but the same configured header share a bucket, and a differing header value
+// does not.
+func TestMountLookup_ClientIPHeader(t *testing.T) {
+	cfg := lookupConfig("example.com", "mongo")
+	cfg.LookupRatePerMin = 1
+	cfg.ClientIPHeader = "CF-Connecting-IP"
+	h := mountLookup(cfg, handlers.NewServer(nil, nil), emptyRegistry{})
+
+	get := func(remoteAddr, headerValue string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest("GET", "/.well-known/bsvalias", nil)
+		r.RemoteAddr = remoteAddr
+		if headerValue != "" {
+			r.Header.Set("CF-Connecting-IP", headerValue)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := get("10.0.0.1:1", "5.5.5.5"); w.Code != http.StatusOK {
+		t.Fatalf("first request = %d, want 200", w.Code)
+	}
+	// Different RemoteAddr, same header value: same bucket, so this is refused.
+	if w := get("10.0.0.2:1", "5.5.5.5"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("same header value from a different RemoteAddr = %d, want 429", w.Code)
+	}
+	// Different header value: its own bucket.
+	if w := get("10.0.0.1:1", "6.6.6.6"); w.Code != http.StatusOK {
+		t.Fatalf("different header value = %d, want 200", w.Code)
+	}
+}

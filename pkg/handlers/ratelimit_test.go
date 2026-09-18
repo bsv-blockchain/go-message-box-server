@@ -10,7 +10,7 @@ import (
 
 func TestRateLimiter(t *testing.T) {
 	clock := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
-	l := NewRateLimiter(2, false, 1)
+	l := NewRateLimiter(2, false, 1, "")
 	l.now = func() time.Time { return clock }
 	h := l.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 
@@ -56,7 +56,7 @@ func TestRateLimiter(t *testing.T) {
 		t.Fatal("new window must pass")
 	}
 
-	trusted := NewRateLimiter(1, true, 1)
+	trusted := NewRateLimiter(1, true, 1, "")
 	trusted.now = func() time.Time { return clock }
 	th := trusted.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	// perMinute is 1, so each case below is the first hit on its bucket (204) or
@@ -89,7 +89,7 @@ func TestRateLimiter(t *testing.T) {
 
 	// Two proxies of our own: the client is two entries from the right, and the
 	// entry the nearer proxy appended is our own load balancer, not a client.
-	twoHops := NewRateLimiter(1, true, 2)
+	twoHops := NewRateLimiter(1, true, 2, "")
 	twoHops.now = func() time.Time { return clock }
 	tw := twoHops.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	for _, c := range []struct {
@@ -109,7 +109,7 @@ func TestRateLimiter(t *testing.T) {
 		}
 	}
 
-	off := NewRateLimiter(0, false, 1)
+	off := NewRateLimiter(0, false, 1, "")
 	oh := off.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	for i := 0; i < 100; i++ {
 		w := httptest.NewRecorder()
@@ -118,4 +118,171 @@ func TestRateLimiter(t *testing.T) {
 			t.Fatal("disabled limiter must pass everything")
 		}
 	}
+}
+
+// TestRateLimiter_ClientIPHeader covers CLIENT_IP_HEADER: when configured it
+// takes precedence over trustProxy/hops, falls back to the existing logic on
+// anything that is not exactly one parseable address, and is never consulted
+// at all when unset — even if a client sends the header anyway.
+func TestRateLimiter_ClientIPHeader(t *testing.T) {
+	clock := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	// serve runs one request carrying RemoteAddr, an optional X-Forwarded-For,
+	// and zero or more values for the header named by headerName (zero means
+	// the header is absent; more than one exercises the duplicated-header case).
+	serve := func(h http.Handler, remote, xff, headerName string, headerValues ...string) int {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		for _, v := range headerValues {
+			r.Header.Add(headerName, v)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	newHandler := func(perMinute int, trustProxy bool, hops int, clientIPHeader string) http.Handler {
+		l := NewRateLimiter(perMinute, trustProxy, hops, clientIPHeader)
+		l.now = func() time.Time { return clock }
+		return l.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	}
+
+	t.Run("buckets keyed by the header", func(t *testing.T) {
+		h := newHandler(1, false, 1, "CF-Connecting-IP")
+		if got := serve(h, "10.0.1.1:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 204 {
+			t.Fatalf("first hit = %d, want 204", got)
+		}
+		// Same header value, a different RemoteAddr: still one bucket.
+		if got := serve(h, "10.0.1.2:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 429 {
+			t.Fatalf("same header value, different RemoteAddr = %d, want 429", got)
+		}
+		// A different header value gets its own bucket, RemoteAddr aside.
+		if got := serve(h, "10.0.1.1:1", "", "CF-Connecting-IP", "6.6.6.6"); got != 204 {
+			t.Fatalf("different header value = %d, want 204", got)
+		}
+	})
+
+	t.Run("surrounding whitespace is not part of the address", func(t *testing.T) {
+		h := newHandler(1, false, 1, "CF-Connecting-IP")
+		if got := serve(h, "10.0.1.3:1", "", "CF-Connecting-IP", "  5.5.5.6\t"); got != 204 {
+			t.Fatalf("padded value = %d, want 204", got)
+		}
+		// Unpadded, from elsewhere: the same client, so the same bucket. Left
+		// untrimmed the padded value would not parse and would have keyed on
+		// RemoteAddr instead, leaving this request a bucket of its own.
+		if got := serve(h, "10.0.1.4:1", "", "CF-Connecting-IP", "5.5.5.6"); got != 429 {
+			t.Fatalf("same address unpadded = %d, want 429", got)
+		}
+	})
+
+	t.Run("spoofed X-Forwarded-For ignored when the header is valid, even with trustProxy", func(t *testing.T) {
+		h := newHandler(1, true, 1, "CF-Connecting-IP")
+		if got := serve(h, "10.0.2.1:1", "9.9.9.9", "CF-Connecting-IP", "7.7.7.7"); got != 204 {
+			t.Fatalf("first hit = %d, want 204", got)
+		}
+		// Same header value but a wildly different spoofed XFF and RemoteAddr:
+		// still one bucket, because the header wins over trustProxy/hops.
+		if got := serve(h, "10.0.2.2:1", "1.2.3.4, 8.8.8.8", "CF-Connecting-IP", "7.7.7.7"); got != 429 {
+			t.Fatalf("header must win over trustProxy XFF = %d, want 429", got)
+		}
+	})
+
+	t.Run("header absent falls back", func(t *testing.T) {
+		untrusted := newHandler(1, false, 1, "CF-Connecting-IP")
+		if got := serve(untrusted, "10.0.3.1:1", "", "CF-Connecting-IP"); got != 204 {
+			t.Fatalf("first (RemoteAddr fallback) = %d, want 204", got)
+		}
+		if got := serve(untrusted, "10.0.3.1:2", "", "CF-Connecting-IP"); got != 429 {
+			t.Fatalf("second on same RemoteAddr = %d, want 429", got)
+		}
+
+		trusted := newHandler(1, true, 1, "CF-Connecting-IP")
+		if got := serve(trusted, "10.0.3.2:1", "9.9.9.9, 7.7.7.7", "CF-Connecting-IP"); got != 204 {
+			t.Fatalf("first (XFF hop fallback) = %d, want 204", got)
+		}
+		if got := serve(trusted, "10.0.3.3:1", "1.1.1.1, 7.7.7.7", "CF-Connecting-IP"); got != 429 {
+			t.Fatalf("second sharing the XFF hop = %d, want 429", got)
+		}
+	})
+
+	t.Run("garbage header value falls back to RemoteAddr", func(t *testing.T) {
+		for _, c := range []struct {
+			name   string
+			values []string
+		}{
+			{"not an IP", []string{"not-an-ip"}},
+			{"empty value", []string{""}},
+			{"comma-separated list", []string{"1.1.1.1, 2.2.2.2"}},
+			// Two different values, so a limiter that dropped the "exactly one"
+			// rule and took whichever value it found first still keys both
+			// requests below alike and fails the second assertion.
+			{"header sent twice", []string{"5.5.5.5", "6.6.6.6"}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				h := newHandler(1, false, 1, "CF-Connecting-IP")
+				// Two connections from different hosts carrying the same rejected
+				// header. Both pass only if the key came from RemoteAddr: anything
+				// that keyed on the header value — the raw string, or the first of
+				// two — would put them in one bucket and refuse the second. Varying
+				// the port alone would not tell the two apart, since SplitHostPort
+				// drops it.
+				if got := serve(h, "10.0.4.1:1", "", "CF-Connecting-IP", c.values...); got != 204 {
+					t.Fatalf("first host = %d, want 204", got)
+				}
+				if got := serve(h, "10.0.4.2:1", "", "CF-Connecting-IP", c.values...); got != 204 {
+					t.Fatalf("second host, same rejected header = %d, want 204", got)
+				}
+				// And the bucket the first request landed in is exactly the one a
+				// request with no header at all lands in: the fallback is complete,
+				// not a variant keyed on the header too.
+				if got := serve(h, "10.0.4.1:2", "", "CF-Connecting-IP"); got != 429 {
+					t.Fatalf("headerless repeat of the first host = %d, want 429", got)
+				}
+			})
+		}
+	})
+
+	t.Run("IPv6 accepted, equivalent spellings share a bucket", func(t *testing.T) {
+		h := newHandler(1, false, 1, "CF-Connecting-IP")
+		if got := serve(h, "10.0.5.1:1", "", "CF-Connecting-IP", "::1"); got != 204 {
+			t.Fatalf("first = %d, want 204", got)
+		}
+		if got := serve(h, "10.0.5.2:1", "", "CF-Connecting-IP", "0:0:0:0:0:0:0:1"); got != 429 {
+			t.Fatalf("equivalent spelling = %d, want 429", got)
+		}
+	})
+
+	t.Run("header name matches regardless of the case it is configured or sent in", func(t *testing.T) {
+		h := newHandler(1, false, 1, "cf-connecting-ip")
+		if got := serve(h, "10.0.6.1:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 204 {
+			t.Fatalf("first = %d, want 204", got)
+		}
+		if got := serve(h, "10.0.6.2:1", "", "Cf-Connecting-Ip", "5.5.5.5"); got != 429 {
+			t.Fatalf("differently-cased header name = %d, want 429", got)
+		}
+	})
+
+	t.Run("disabled limiter unaffected", func(t *testing.T) {
+		h := newHandler(0, false, 1, "CF-Connecting-IP")
+		for i := 0; i < 10; i++ {
+			if got := serve(h, "10.0.7.1:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 204 {
+				t.Fatalf("disabled limiter must pass everything, got %d", got)
+			}
+		}
+	})
+
+	t.Run("header not configured: a client-sent CF-Connecting-IP is ignored entirely", func(t *testing.T) {
+		h := newHandler(1, false, 1, "")
+		if got := serve(h, "10.0.8.1:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 204 {
+			t.Fatalf("first = %d, want 204", got)
+		}
+		// Same header value, different RemoteAddr: must NOT share a bucket, since
+		// the header is never consulted when it is not configured.
+		if got := serve(h, "10.0.8.2:1", "", "CF-Connecting-IP", "5.5.5.5"); got != 204 {
+			t.Fatalf("header ignored, different RemoteAddr = %d, want 204", got)
+		}
+	})
 }

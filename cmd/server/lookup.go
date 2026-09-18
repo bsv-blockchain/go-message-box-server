@@ -59,5 +59,5 @@ func mountLookup(cfg *config.Config, srv *handlers.Server, registry mbstorage.Ha
 		Cooldown:  cfg.HandleCooldown,
 		AdminKeys: cfg.AdminIdentityKeys,
 	}, registry)
-	return handlers.NewRateLimiter(cfg.LookupRatePerMin, cfg.TrustProxy, cfg.TrustedProxyHops).Wrap(srv.LookupRoutes())
+	return handlers.NewRateLimiter(cfg.LookupRatePerMin, cfg.TrustProxy, cfg.TrustedProxyHops, cfg.ClientIPHeader).Wrap(srv.LookupRoutes())
 }

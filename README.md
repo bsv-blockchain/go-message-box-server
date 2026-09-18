@@ -128,6 +128,7 @@ docker compose --profile mongo up -d mongo
 | `LOOKUP_RATE_PER_MIN` | Per-IP cap, shared across all five public routes; exactly `0` **disables** the limiter (it does not block traffic). Any other value that is not a non-negative integer, a negative one included, falls back to the default | `60` |
 | `TRUST_PROXY` | `true` → client IP taken from `X-Forwarded-For` instead of the connection (set when behind a load balancer) | `false` |
 | `TRUSTED_PROXY_HOPS` | How many proxies of your own sit in front of this process; the client's address is counted that many entries from the right of `X-Forwarded-For`. Only read when `TRUST_PROXY=true`; values below `1` are read as `1` | `1` |
+| `CLIENT_IP_HEADER` | Name of a single-valued header a proxy sets to the real client address, e.g. `CF-Connecting-IP` behind Cloudflare. Must be a syntactically valid HTTP header field name or the process refuses to start. **Wins over `TRUST_PROXY`/`TRUSTED_PROXY_HOPS`** whenever the header is present exactly once and its value parses as an IP; otherwise falls back to the `TRUST_PROXY` logic above. See the caveat below | unset |
 
 The rate limiter is in-memory and therefore per-replica: three replicas behind
 one load balancer allow three times `LOOKUP_RATE_PER_MIN` between them. Behind a
@@ -144,6 +145,33 @@ stops a client picking a fresh bucket for every request, or spending another
 client's. A header with fewer entries than there are hops falls back to the
 connection address, which over-counts rather than letting traffic past — so a
 hop count that is too high is safe, and one that is too low is not.
+
+`TRUST_PROXY` assumes the proxy in front of the process *appends* to
+`X-Forwarded-For`. Some proxies don't: Traefik without
+`forwardedHeaders.trustedIPs` configured *replaces* the header with the
+address it saw the connection from, so counting hops from the right just
+recovers the proxy's own address no matter how it's set. If that proxy (or
+something upstream of it, e.g. Cloudflare) instead forwards a dedicated
+single-value header untouched, point `CLIENT_IP_HEADER` at it —
+`CF-Connecting-IP` for Cloudflare. When both are set, `CLIENT_IP_HEADER` wins
+whenever it is present exactly once and parses as an IP; `TRUST_PROXY` is only
+consulted as the fallback.
+
+**Security caveat:** `CLIENT_IP_HEADER` is only trustworthy when the origin is
+reachable *exclusively* through the proxy that sets it. Anything that can reach
+the process directly can set the header itself, and because every distinct value
+is its own bucket, a caller sending a fresh value on each request gets a fresh
+bucket each time: it is not rate limited **at all**, and it adds an entry per
+request to the limiter's in-memory map until the minute rolls. That is *weaker*
+than leaving the variable unset, where the same traffic keys on one connection
+address and is capped at `LOOKUP_RATE_PER_MIN`. So set it only once the origin
+accepts nothing but the proxy — Cloudflare's published IP ranges, or a tunnel
+with no other route in. A common way for this not to hold: an ingress
+controller whose load balancer is internet-facing *and* fronts a Cloudflare
+tunnel, so the same route answers requests that never touched Cloudflare. Close
+that first, for instance with an ingress-level source allow-list that admits
+only the tunnel's addresses on this host. The header bounds fairness between clients that really do arrive through the proxy;
+it is **not** an authentication signal and must never be used as one.
 
 ### Routes
 

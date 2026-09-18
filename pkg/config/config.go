@@ -50,6 +50,15 @@ type Config struct {
 	LookupRatePerMin  int
 	TrustProxy        bool
 	TrustedProxyHops  int
+	// ClientIPHeader, when set, names a single-valued header a proxy sets to the
+	// real client address (e.g. "CF-Connecting-IP"); it takes precedence over
+	// TrustProxy/TrustedProxyHops in RateLimiter.clientIP. Only set it once the
+	// origin is reachable exclusively through the proxy that sets the header:
+	// anywhere it can be sent directly, a fresh value per request is a fresh
+	// bucket per request and the limit stops applying at all — see the caveat on
+	// handlers.RateLimiter and README.md's Configuration section. It is not an
+	// authentication signal.
+	ClientIPHeader string
 }
 
 // Load reads configuration from environment variables.
@@ -105,6 +114,14 @@ func Load() (*Config, error) {
 	if cfg.TrustedProxyHops < 1 {
 		cfg.TrustedProxyHops = 1
 	}
+	// Stored as trimmed but not canonicalised: whoever reads it (RateLimiter.
+	// clientIP) looks it up with http.Header.Get/Values, which canonicalises the
+	// name it is given, so the case written here never has to match the case a
+	// proxy sends the header in.
+	cfg.ClientIPHeader = strings.TrimSpace(os.Getenv("CLIENT_IP_HEADER"))
+	if cfg.ClientIPHeader != "" && !isValidHTTPHeaderName(cfg.ClientIPHeader) {
+		return nil, fmt.Errorf("CLIENT_IP_HEADER %q is not a valid HTTP header field name", cfg.ClientIPHeader)
+	}
 	seenAdmin := make(map[string]bool)
 	for _, k := range strings.Split(os.Getenv("ADMIN_IDENTITY_KEYS"), ",") {
 		k = strings.ToLower(strings.TrimSpace(k))
@@ -159,6 +176,36 @@ func isCompressedPubKeyHex(s string) bool {
 	}
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+// isValidHTTPHeaderName reports whether s is a syntactically valid HTTP header
+// field name: an RFC 7230 token, one or more tchars. Anything else could never
+// arrive as an actual header, so CLIENT_IP_HEADER would silently do nothing —
+// the same reasoning that makes ADMIN_IDENTITY_KEYS and PAYMAIL_DOMAIN fail
+// fast on nonsense rather than accept it.
+func isValidHTTPHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isTokenChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isTokenChar reports whether b is an RFC 7230 tchar.
+func isTokenChar(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	}
+	switch b {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return false
 }
 
 func getEnvInt(key string, fallback int) int {
