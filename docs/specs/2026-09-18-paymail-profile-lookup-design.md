@@ -47,6 +47,7 @@ trivial).
 | `HANDLE_COOLDOWN_DAYS` | Days before a released handle may be claimed by a different key | `30` |
 | `ADMIN_IDENTITY_KEYS` | Comma list of compressed pubkey hex allowed to call admin routes | empty (admin routes reject all) |
 | `LOOKUP_RATE_PER_MIN` | Per-IP request cap on public routes | `60` |
+| `TRUST_PROXY` | `true` → client IP taken from first `X-Forwarded-For` entry (set when behind a load balancer) | `false` |
 
 ## Profile certificate
 
@@ -83,32 +84,34 @@ Rules (server enforces on write; clients re-check all but DB state):
 
 ## Storage
 
-One table, added to both sqlite and postgres migration lists in `pkg/db/db.go`;
-queries in `pkg/db/queries.go` following existing `*DB` method style.
+New `storage.HandleStore` interface embedded in `storage.Store`
+(`pkg/storage/handles.go`), implemented by `sqlstore`, `mongostore` and the
+handlers `fakeStore`, all verified by the shared conformance suite in
+`pkg/storage/storagetest`. The contract is backend-free.
+
+Logical record (one per handle, never deleted — keeps the `issuedAt` replay
+guard and the skeleton reservation during cooldown):
 
 ```
-handles(
-  handle          TEXT PRIMARY KEY,
-  skeleton        TEXT NOT NULL UNIQUE,
-  identityKey     TEXT UNIQUE,          -- NULL when released
-  lastIdentityKey TEXT NOT NULL,
-  certificate     TEXT,                 -- JSON, NULL when released
-  issuedAt        TIMESTAMP NOT NULL,   -- highest accepted, survives release
-  createdAt, updatedAt TIMESTAMP NOT NULL,
-  releasedAt      TIMESTAMP,            -- NULL while active
-  cooldownUntil   TIMESTAMP,            -- NULL = no cooldown
-  releasedBy      TEXT                  -- 'owner' or admin identity key
-)
+handle (key) | skeleton (unique) | identityKey (unique when set; unset = released)
+lastIdentityKey | certificate (JSON; unset when released) | serialNumber
+issuedAt (highest accepted, survives release) | createdAt | updatedAt
+releasedAt | cooldownUntil (unset = none) | releasedBy ('owner' or admin key)
 ```
 
-Rows are never deleted (keeps `issuedAt` replay guard and skeleton reservation
-during cooldown).
+SQL: table `handles`, all times stored as BIGINT unix milliseconds (zone-safe,
+comparable in both dialects). Mongo: collection `handles`, `_id` = handle,
+unique index on `skeleton`, partial unique index on `identityKey`
+(`$type: string`).
 
-First-come-first-served is enforced by the UNIQUE constraints, never by
-check-then-insert. Constraint violations map to 409 codes. Reclaiming a
-released row is one conditional `UPDATE … WHERE identityKey IS NULL AND
-(lastIdentityKey = ? OR cooldownUntil IS NULL OR cooldownUntil < ?)`; zero rows
-affected → 409.
+First-come-first-served comes from the unique keys, never check-then-insert,
+and no multi-statement transactions. `ClaimHandle` is three single-statement
+attempts in order — conditional owner update, conditional reclaim of a released
+row (`identityKey unset AND issuedAt < new AND (lastIdentityKey = caller OR
+cooldownUntil unset OR cooldownUntil <= now)`), insert — followed by a read-only
+diagnosis that maps the failure to `ErrHandleTaken`, `ErrHandleTooSimilar`,
+`ErrKeyHasHandle`, `ErrHandleCooldown` or `ErrStaleCertificate`. A resubmission
+with the stored `serialNumber` and `issuedAt` by the same key is a no-op.
 
 ## HTTP API
 
@@ -134,7 +137,7 @@ Outcomes:
   strictly greater than the row's stored value. `201`.
 - A key that wants a different handle must tombstone its current one first
   (`ERR_KEY_HAS_HANDLE` otherwise).
-- Byte-identical resubmission of the stored cert → `200` no-op.
+- Resubmission with the stored `serialNumber` and `issuedAt` by the same key → `200` no-op.
 
 Errors (`writeError` convention): `400 ERR_INVALID_CERTIFICATE`,
 `400 ERR_INVALID_HANDLE`, `400 ERR_WRONG_DOMAIN`, `409 ERR_HANDLE_TAKEN`,
@@ -194,14 +197,16 @@ cert). Operator cannot forge profile fields or rebind a cert to another handle.
 
 - `pkg/handles/` — `Validate`, `Skeleton`, reserved list, BRFC constants + derivation test.
 - `pkg/profilecert/` — parse + rule checks 1–6 over go-sdk `Certificate`.
-- `pkg/db` — migration + `RegisterHandle`, `UpdateHandleCert`, `ReleaseHandle`,
-  `ReclaimHandle`, `SearchHandles`, `GetCertByIdentityKey`, `HandleAvailability`.
+- `pkg/storage/handles.go` — `HandleStore` contract (`ClaimHandle`,
+  `ReleaseHandle`, `GetHandle`, `GetHandleBySkeleton`, `GetHandleByIdentityKey`,
+  `SearchHandles`); implementations in `sqlstore/handles.go`,
+  `mongostore/handles.go`, handlers `fakeStore`; conformance in `storagetest/handles.go`.
 - `pkg/handlers/lookup.go` — public handlers; `admin_handle.go` — admin route.
 - `pkg/handlers/ratelimit.go` — per-IP token bucket (in-memory).
 - `cmd/server/main.go` — mount when `PAYMAIL_DOMAIN` set.
 - `README.md` — DNS setup (SRV record, DNSSEC), env vars. Swagger annotations on handlers.
 
-## Testing (stdlib `testing`, sqlite in-memory)
+## Testing (stdlib `testing`; conformance suite on sqlite, postgres, mongo, fake)
 
 - Table tests: `Validate`, `Skeleton` (each fold, separators, repeats, reserved-by-skeleton).
 - BRFC id derivation matches constants.
