@@ -1,3 +1,4 @@
 messagebox-server
 messagebox.db
 .env
+.worktrees/

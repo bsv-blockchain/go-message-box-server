@@ -1,22 +1,29 @@
-package db
+// Package sqlstore implements storage.Store on top of database/sql. It supports
+// SQLite and PostgreSQL; the dialect differences are the ?/$n placeholder
+// rebinding and the DDL in the two migration sets.
+package sqlstore
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
-// DB wraps the sql.DB connection.
-type DB struct {
-	*sql.DB
+// Store is a SQL-backed storage.Store.
+type Store struct {
+	db     *sql.DB
 	driver string
 }
 
 // New opens a database connection.
-func New(driver, source string) (*DB, error) {
+func New(driver, source string) (*Store, error) {
 	conn, err := sql.Open(driver, source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -24,12 +31,15 @@ func New(driver, source string) (*DB, error) {
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-	return &DB{DB: conn, driver: driver}, nil
+	return &Store{db: conn, driver: driver}, nil
 }
 
+// Close releases the connection pool.
+func (s *Store) Close() error { return s.db.Close() }
+
 // rebind converts ? placeholders to $1, $2, ... for postgres.
-func (d *DB) rebind(query string) string {
-	if d.driver != "postgres" {
+func (s *Store) rebind(query string) string {
+	if s.driver != "postgres" {
 		return query
 	}
 	var buf strings.Builder
@@ -45,25 +55,43 @@ func (d *DB) rebind(query string) string {
 	return buf.String()
 }
 
-// exec wraps sql.DB.Exec with placeholder rebinding.
-func (d *DB) exec(query string, args ...any) (sql.Result, error) {
-	return d.DB.Exec(d.rebind(query), args...)
+// exec wraps sql.DB.ExecContext with placeholder rebinding.
+func (s *Store) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, s.rebind(query), args...)
 }
 
-// queryRow wraps sql.DB.QueryRow with placeholder rebinding.
-func (d *DB) queryRow(query string, args ...any) *sql.Row {
-	return d.DB.QueryRow(d.rebind(query), args...)
+// queryRow wraps sql.DB.QueryRowContext with placeholder rebinding.
+func (s *Store) queryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, s.rebind(query), args...)
 }
 
-// query wraps sql.DB.Query with placeholder rebinding.
-func (d *DB) query(query string, args ...any) (*sql.Rows, error) {
-	return d.DB.Query(d.rebind(query), args...)
+// query wraps sql.DB.QueryContext with placeholder rebinding.
+func (s *Store) query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, s.rebind(query), args...)
 }
 
-// Migrate runs all migrations to bring the schema up to date.
-func (d *DB) Migrate() error {
+// nullStr converts a scanned nullable column to a pointer.
+func nullStr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	v := n.String
+	return &v
+}
+
+// nullTime converts a scanned nullable timestamp to a pointer.
+func nullTime(n sql.NullTime) *time.Time {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Time
+	return &v
+}
+
+// EnsureSchema runs all migrations to bring the schema up to date.
+func (s *Store) EnsureSchema(ctx context.Context) error {
 	var migrations []string
-	switch d.driver {
+	switch s.driver {
 	case "postgres":
 		migrations = postgresMigrations()
 	default:
@@ -71,18 +99,31 @@ func (d *DB) Migrate() error {
 	}
 
 	for _, m := range migrations {
-		if _, err := d.DB.Exec(m); err != nil {
+		if _, err := s.db.ExecContext(ctx, m); err != nil {
 			return fmt.Errorf("migration failed: %s: %w", m[:min(60, len(m))], err)
+		}
+	}
+
+	// Seed the default fees without clobbering values an operator has changed.
+	for _, f := range storage.DefaultDeliveryFees() {
+		_, err := s.exec(ctx,
+			`INSERT INTO server_fees (message_box, delivery_fee) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+			f.MessageBox, f.Fee,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to seed delivery fee for %s: %w", f.MessageBox, err)
 		}
 	}
 	return nil
 }
 
+// messagesIndex covers ListMessages: equality on recipient and messageBoxId,
+// then the ORDER BY keys. Stopping at the two equality columns leaves the sort
+// in place (EXPLAIN QUERY PLAN: USE TEMP B-TREE FOR ORDER BY).
+const messagesIndexColumns = `messages(recipient, messageBoxId, created_at, messageId)`
+
 func commonMigrations() []string {
 	return []string{
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('notifications', 10) ON CONFLICT DO NOTHING`,
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('inbox', 0) ON CONFLICT DO NOTHING`,
-		`INSERT INTO server_fees (message_box, delivery_fee) VALUES ('payment_inbox', 0) ON CONFLICT DO NOTHING`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient ON message_permissions(recipient)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_recipient_box ON message_permissions(recipient, message_box)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_box ON message_permissions(message_box)`,
@@ -91,6 +132,10 @@ func commonMigrations() []string {
 		`CREATE INDEX IF NOT EXISTS idx_device_registrations_identity_active ON device_registrations(identity_key, active)`,
 	}
 }
+
+// sqliteMessagesIndex builds in one go. SQLite serialises writers anyway, so
+// there is no rolling-deploy window to protect.
+const sqliteMessagesIndex = `CREATE INDEX IF NOT EXISTS idx_messages_recipient_box ON ` + messagesIndexColumns
 
 func sqliteMigrations() []string {
 	tables := []string{
@@ -140,7 +185,31 @@ func sqliteMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	return append(tables, commonMigrations()...)
+	return append(append(tables, sqliteMessagesIndex), commonMigrations()...)
+}
+
+// postgresMessagesIndex builds without blocking writers. A plain CREATE INDEX
+// holds a SHARE lock on messages for the whole build, so during a rolling
+// deploy every sendMessage INSERT and acknowledgeMessage DELETE on the old
+// replicas waits while the new instance sits before ListenAndServe. Each
+// migration runs in its own autocommit ExecContext, which is what CONCURRENTLY
+// requires.
+//
+// IF NOT EXISTS would happily skip an invalid leftover from a build that failed
+// part way, so the invalid one is dropped first; CONCURRENTLY cannot run inside
+// the DO block, hence the two statements.
+var postgresMessagesIndex = []string{
+	`DO $$
+	 BEGIN
+	   IF EXISTS (
+	     SELECT 1 FROM pg_class c
+	     JOIN pg_index i ON i.indexrelid = c.oid
+	     WHERE c.relname = 'idx_messages_recipient_box' AND NOT i.indisvalid
+	   ) THEN
+	     EXECUTE 'DROP INDEX idx_messages_recipient_box';
+	   END IF;
+	 END $$`,
+	`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_recipient_box ON ` + messagesIndexColumns,
 }
 
 func postgresMigrations() []string {
@@ -191,5 +260,9 @@ func postgresMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	return append(tables, commonMigrations()...)
+	migrations := append(tables, postgresMessagesIndex...)
+	return append(migrations, commonMigrations()...)
 }
+
+// compile-time assertion that Store satisfies the contract.
+var _ storage.Store = (*Store)(nil)

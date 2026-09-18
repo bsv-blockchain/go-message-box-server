@@ -6,11 +6,18 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/db"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 var DEVICE_SEND_MESSAGE_TIMEOUT = 5 * time.Second
+
+// storeCallTimeout bounds each device-store call. The caller detaches this work
+// from the request, so nothing else would ever stop it: a lock held on
+// device_registrations, or a connected but unresponsive Mongo primary, would
+// otherwise park a goroutine holding a pool connection for good, one per
+// delivery, until the pool is exhausted and foreground sends start failing.
+var storeCallTimeout = 5 * time.Second
 
 // FCMPayload contains the notification data to send.
 type FCMPayload struct {
@@ -26,8 +33,12 @@ type SendFCMNotificationResult struct {
 }
 
 // SendFCMNotification pushes notification to all registered devices for a recipient.
-// Looks up FCM tokens from device_registrations table and sends to all active devices.
-func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) *SendFCMNotificationResult {
+// Looks up FCM tokens from the device store and sends to all active devices.
+//
+// It bounds every call it makes — each FCM send and each device-store call gets
+// its own timeout — so the caller can pass a context with no deadline and still
+// be sure this returns. Cancelling the passed context stops the run.
+func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recipient string, payload FCMPayload) *SendFCMNotificationResult {
 	if !IsEnabled() {
 		return &SendFCMNotificationResult{Success: false, Error: "FCM not configured"}
 	}
@@ -35,26 +46,28 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 	logger.Log("[DEBUG] Attempting to send FCM notification to", "recipient", recipient)
 	logger.Log("[DEBUG] Payload", "payload", payload)
 
-	devices, err := database.ListActiveDevices(recipient)
+	listCtx, cancelList := context.WithTimeout(ctx, storeCallTimeout)
+	deviceList, err := devices.ListActiveDevices(listCtx, recipient)
+	cancelList()
 	if err != nil {
 		logger.Error("[FCM] Failed to get devices", "error", err, "recipient", recipient)
 		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to get devices: %v", err)}
 	}
 
-	if len(devices) == 0 {
+	if len(deviceList) == 0 {
 		logger.Log("[FCM] No active devices found", "recipient", recipient)
 		return &SendFCMNotificationResult{Success: false, Error: "No registered devices found for recipient"}
 	}
 
-	logger.Log("[FCM] Sending notifications", "recipient", recipient, "deviceCount", len(devices))
+	logger.Log("[FCM] Sending notifications", "recipient", recipient, "deviceCount", len(deviceList))
 
 	var successCount, failureCount int
 
-	for _, device := range devices {
+	for _, device := range deviceList {
 		msg := buildMessage(device.FCMToken, payload)
 
-		ctx, cancel := context.WithTimeout(context.Background(), DEVICE_SEND_MESSAGE_TIMEOUT)
-		_, err := Client().Send(ctx, msg)
+		sendCtx, cancel := context.WithTimeout(ctx, DEVICE_SEND_MESSAGE_TIMEOUT)
+		_, err := Client().Send(sendCtx, msg)
 		cancel()
 
 		if err != nil {
@@ -64,7 +77,13 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 			// we only mark devices as disabled when token is invalid
 			if isInvalidTokenError(err) {
 				logger.Log("[FCM] Deactivating invalid token", "tokenSuffix", lastN(device.FCMToken, 10))
-				if err := database.DeactivateDevice(device.FCMToken); err != nil {
+				// Recording the outcome gets its own budget: the send's
+				// deadline has already expired in the timeout case, and a token
+				// known to be invalid still has to be deactivated.
+				deactivateCtx, cancelDeactivate := context.WithTimeout(ctx, storeCallTimeout)
+				err := devices.DeactivateDevice(deactivateCtx, device.FCMToken)
+				cancelDeactivate()
+				if err != nil {
 					logger.Error("[FCM] Failed to deactivate device", "error", err)
 				}
 			}
@@ -74,7 +93,10 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 		successCount++
 		logger.Log("[FCM] Notification sent", "tokenSuffix", lastN(device.FCMToken, 10))
 
-		if err := database.UpdateDeviceLastUsed(device.FCMToken); err != nil {
+		lastUsedCtx, cancelLastUsed := context.WithTimeout(ctx, storeCallTimeout)
+		err = devices.UpdateDeviceLastUsed(lastUsedCtx, device.FCMToken)
+		cancelLastUsed()
+		if err != nil {
 			logger.Error("[FCM] Failed to update last_used", "error", err)
 		}
 	}
@@ -84,7 +106,7 @@ func SendFCMNotification(database *db.DB, recipient string, payload FCMPayload) 
 	// if not a single device received a notification consider it a fail
 	// otherwise we consider it a success
 	if successCount == 0 {
-		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to send to all %d registered devices", len(devices))}
+		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to send to all %d registered devices", len(deviceList))}
 	}
 
 	return &SendFCMNotificationResult{Success: true}

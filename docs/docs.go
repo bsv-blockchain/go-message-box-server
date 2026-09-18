@@ -587,10 +587,6 @@ const docTemplate = `{
                     "type": "string",
                     "example": "...abc123"
                 },
-                "id": {
-                    "type": "integer",
-                    "example": 1
-                },
                 "lastUsed": {
                     "type": "string",
                     "example": "2024-01-01T12:00:00.000Z"
@@ -688,7 +684,7 @@ const docTemplate = `{
                 "permissions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/handlers.PermissionDetail"
+                        "$ref": "#/definitions/handlers.PermissionDetailList"
                     }
                 },
                 "status": {
@@ -728,7 +724,7 @@ const docTemplate = `{
             }
         },
         "handlers.PermissionDetail": {
-            "description": "Permission details",
+            "description": "Permission details (camelCase for getPermission endpoint)",
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -752,6 +748,32 @@ const docTemplate = `{
                     "example": "payment_required"
                 },
                 "updatedAt": {
+                    "type": "string",
+                    "example": "2024-01-01T12:00:00.000Z"
+                }
+            }
+        },
+        "handlers.PermissionDetailList": {
+            "description": "Permission details (snake_case for listPermissions endpoint)",
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "example": "2024-01-01T12:00:00.000Z"
+                },
+                "message_box": {
+                    "type": "string",
+                    "example": "inbox"
+                },
+                "recipient_fee": {
+                    "type": "integer",
+                    "example": 100
+                },
+                "sender": {
+                    "type": "string",
+                    "example": "03abc..."
+                },
+                "updated_at": {
                     "type": "string",
                     "example": "2024-01-01T12:00:00.000Z"
                 }
@@ -880,10 +902,6 @@ const docTemplate = `{
             "description": "Response after registering a device",
             "type": "object",
             "properties": {
-                "deviceId": {
-                    "type": "integer",
-                    "example": 1
-                },
                 "message": {
                     "type": "string",
                     "example": "Device registered successfully for push notifications"

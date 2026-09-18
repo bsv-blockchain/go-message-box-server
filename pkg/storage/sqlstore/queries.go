@@ -1,0 +1,449 @@
+package sqlstore
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
+)
+
+// now is the timestamp to write. It is always UTC: PostgreSQL's TIMESTAMP
+// columns hold no zone and silently discard the offset lib/pq sends, so a
+// local-time write is read back as though it had been UTC all along — hours
+// away from when it happened. SQLite keeps the offset in text, which round
+// trips correctly but makes ORDER BY created_at a text comparison of
+// offset-bearing strings, so rows written either side of a DST change sort
+// wrong. Writing UTC fixes both.
+func nowUTC() time.Time { return time.Now().UTC() }
+
+// --- messages ---------------------------------------------------------------
+
+// ensureMessageBox creates the messageBox row if it doesn't exist and returns
+// its id. The id is a SQL implementation detail and never leaves this package.
+func (s *Store) ensureMessageBox(ctx context.Context, identityKey, boxType string) (int64, error) {
+	now := nowUTC()
+	_, err := s.exec(ctx,
+		`INSERT INTO messageBox (identityKey, type, created_at, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (type, identityKey) DO NOTHING`,
+		identityKey, boxType, now, now,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var id int64
+	err = s.queryRow(ctx, `SELECT messageBoxId FROM messageBox WHERE identityKey = ? AND type = ?`, identityKey, boxType).Scan(&id)
+	return id, err
+}
+
+// messageBoxID returns the messageBoxId for a given identity and type, or 0 if
+// the box does not exist.
+func (s *Store) messageBoxID(ctx context.Context, identityKey, boxType string) (int64, error) {
+	var id int64
+	err := s.queryRow(ctx, `SELECT messageBoxId FROM messageBox WHERE identityKey = ? AND type = ?`, identityKey, boxType).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
+// InsertMessage implements storage.MessageStore.
+func (s *Store) InsertMessage(ctx context.Context, m storage.NewMessage) error {
+	boxID, err := s.ensureMessageBox(ctx, m.Recipient, m.MessageBox)
+	if err != nil {
+		return err
+	}
+
+	now := nowUTC()
+	res, err := s.exec(ctx,
+		`INSERT INTO messages (messageId, messageBoxId, sender, recipient, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (messageId) DO NOTHING`,
+		m.MessageID, boxID, m.Sender, m.Recipient, m.Body, now, now,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return storage.ErrDuplicateMessage
+	}
+	return nil
+}
+
+// ListMessages implements storage.MessageStore.
+func (s *Store) ListMessages(ctx context.Context, recipient, messageBox string) ([]storage.Message, error) {
+	boxID, err := s.messageBoxID(ctx, recipient, messageBox)
+	if err != nil {
+		return nil, err
+	}
+	if boxID == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.query(ctx,
+		`SELECT messageId, body, sender, created_at, updated_at FROM messages
+		 WHERE recipient = ? AND messageBoxId = ?
+		 ORDER BY created_at ASC, messageId ASC`,
+		recipient, boxID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []storage.Message
+	for rows.Next() {
+		var m storage.Message
+		if err := rows.Scan(&m.MessageID, &m.Body, &m.Sender, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// AcknowledgeMessages implements storage.MessageStore.
+func (s *Store) AcknowledgeMessages(ctx context.Context, recipient string, messageIDs []string) (int64, error) {
+	if len(messageIDs) == 0 {
+		return 0, nil
+	}
+	// Build placeholders
+	query := `DELETE FROM messages WHERE recipient = ? AND messageId IN (`
+	args := []any{recipient}
+	for i, id := range messageIDs {
+		if i > 0 {
+			query += ","
+		}
+		query += "?"
+		args = append(args, id)
+	}
+	query += ")"
+	res, err := s.exec(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// --- fees -------------------------------------------------------------------
+
+// GetServerDeliveryFee implements storage.FeeStore.
+func (s *Store) GetServerDeliveryFee(ctx context.Context, messageBox string) (int, error) {
+	var fee int
+	err := s.queryRow(ctx, `SELECT delivery_fee FROM server_fees WHERE message_box = ?`, messageBox).Scan(&fee)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return fee, err
+}
+
+// --- permissions ------------------------------------------------------------
+
+// textCollation is appended to the text keys of the ListPermissions ORDER BY.
+//
+// Every other backend compares strings bytewise: SQLite's default is BINARY,
+// mongostore relies on BSON's binary compare, and the handler fake uses Go's <.
+// PostgreSQL follows its database collation, which for the usual libc
+// en_US.UTF-8 ignores case and punctuation, so a page of client-named message
+// boxes comes back in a different order and breaks at a different boundary.
+// Forcing "C" here rather than in the DDL keeps existing databases working
+// without a table rewrite.
+func (s *Store) textCollation() string {
+	if s.driver == "postgres" {
+		return ` COLLATE "C"`
+	}
+	return ""
+}
+
+const permissionColumns = `id, recipient, sender, message_box, recipient_fee, created_at, updated_at`
+
+// scanPermission reads one permission row. The id column is scanned and
+// discarded: it is a SQL surrogate key that the contract does not expose.
+func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, error) {
+	var (
+		p      storage.Permission
+		id     int64
+		sender sql.NullString
+	)
+	err := sc.Scan(&id, &p.Recipient, &sender, &p.MessageBox, &p.RecipientFee, &p.CreatedAt, &p.UpdatedAt)
+	p.Sender = nullStr(sender)
+	return p, err
+}
+
+// execer is what the box-wide permission statements run on: the pool itself on
+// SQLite, a transaction holding the advisory lock on PostgreSQL.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// withBoxWideLock serialises writers of one box-wide permission.
+//
+// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
+// sender, since NULL != NULL, so nothing in the schema stops two callers both
+// inserting the box-wide row, and the duplicates are permanent. SQLite needs no
+// help: its writers are serialised, so the single guarded statement in
+// insertBoxWideIfAbsent is atomic. Under PostgreSQL's READ COMMITTED two callers
+// can both pass the NOT EXISTS, so the statements run in a transaction behind an
+// advisory lock keyed on the row. Each statement takes a fresh snapshot, so the
+// second caller sees the row the first one committed.
+//
+// hashtext collisions only make two unrelated keys wait for each other.
+//
+// An expression unique index would make the schema enforce this instead:
+//
+//	CREATE UNIQUE INDEX ... ON message_permissions(recipient, COALESCE(sender, ''), message_box)
+//
+// It cannot be created on a database that already holds duplicates, which the
+// pre-interface code could produce, so it wants a dedupe migration of its own.
+// The index has to stay in a code block here: gofmt rewrites a pair of
+// apostrophes into a curly quote in doc comment prose.
+func (s *Store) withBoxWideLock(ctx context.Context, recipient, messageBox string, fn func(execer) error) error {
+	if s.driver != "postgres" {
+		return fn(s.db)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op once committed
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, recipient, messageBox); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// insertBoxWideIfAbsent inserts the box-wide row unless one exists and reports
+// whether it did. The caller holds withBoxWideLock.
+func (s *Store) insertBoxWideIfAbsent(ctx context.Context, ex execer, recipient, messageBox string, recipientFee int, now time.Time) (bool, error) {
+	res, err := ex.ExecContext(ctx, s.rebind(
+		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+		 SELECT ?, NULL, ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+		   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
+		 )`),
+		recipient, messageBox, recipientFee, now, now,
+		recipient, messageBox,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
+}
+
+// SetPermission implements storage.PermissionStore.
+func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	now := nowUTC()
+
+	if sender == nil {
+		// Insert first, update on a miss. The other way round leaves a gap between
+		// an UPDATE that matched nothing and the INSERT that follows it.
+		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
+			inserted, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
+			if err != nil || inserted {
+				return err
+			}
+			_, err = ex.ExecContext(ctx, s.rebind(
+				`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`),
+				recipientFee, now, recipient, messageBox,
+			)
+			return err
+		})
+	}
+
+	// For non-null sender, ON CONFLICT works fine
+	_, err := s.exec(ctx,
+		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(recipient, sender, message_box) DO UPDATE SET recipient_fee = ?, updated_at = ?`,
+		recipient, *sender, messageBox, recipientFee, now, now, recipientFee, now,
+	)
+	return err
+}
+
+// SetPermissionIfAbsent implements storage.PermissionStore.
+func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
+	now := nowUTC()
+
+	if sender == nil {
+		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
+			_, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
+			return err
+		})
+	}
+
+	_, err := s.exec(ctx,
+		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(recipient, sender, message_box) DO NOTHING`,
+		recipient, *sender, messageBox, recipientFee, now, now,
+	)
+	return err
+}
+
+// GetPermission implements storage.PermissionStore.
+func (s *Store) GetPermission(ctx context.Context, recipient string, sender *string, messageBox string) (*storage.Permission, error) {
+	var row *sql.Row
+	if sender != nil {
+		row = s.queryRow(ctx,
+			`SELECT `+permissionColumns+` FROM message_permissions WHERE recipient = ? AND sender = ? AND message_box = ?`,
+			recipient, *sender, messageBox,
+		)
+	} else {
+		row = s.queryRow(ctx,
+			`SELECT `+permissionColumns+` FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?`,
+			recipient, messageBox,
+		)
+	}
+
+	p, err := scanPermission(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// ListPermissions implements storage.PermissionStore.
+func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) (storage.PermissionPage, error) {
+	if err := q.Validate(); err != nil {
+		return storage.PermissionPage{}, err
+	}
+
+	var page storage.PermissionPage
+
+	where := ` WHERE recipient = ?`
+	args := []any{q.Recipient}
+	if q.MessageBox != nil {
+		where += ` AND message_box = ?`
+		args = append(args, *q.MessageBox)
+	}
+
+	if err := s.queryRow(ctx, `SELECT COUNT(*) FROM message_permissions`+where, args...).Scan(&page.Total); err != nil {
+		return storage.PermissionPage{}, err
+	}
+
+	// The order is fixed by the contract; only the created_at direction varies,
+	// and it comes from a closed set of literals, never from the caller's string.
+	direction := "DESC"
+	if q.Order == storage.SortAsc {
+		direction = "ASC"
+	}
+	collate := s.textCollation()
+	query := `SELECT ` + permissionColumns + ` FROM message_permissions` + where +
+		` ORDER BY message_box` + collate + ` ASC,` +
+		` CASE WHEN sender IS NULL THEN 0 ELSE 1 END,` +
+		` sender` + collate + ` ASC,` +
+		` created_at ` + direction +
+		` LIMIT ? OFFSET ?`
+	args = append(args, q.Limit, q.Offset)
+
+	rows, err := s.query(ctx, query, args...)
+	if err != nil {
+		return storage.PermissionPage{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		p, err := scanPermission(rows)
+		if err != nil {
+			return storage.PermissionPage{}, err
+		}
+		page.Items = append(page.Items, p)
+	}
+	if err := rows.Err(); err != nil {
+		return storage.PermissionPage{}, err
+	}
+	return page, nil
+}
+
+// --- devices ----------------------------------------------------------------
+
+const deviceColumns = `identity_key, fcm_token, device_id, platform, active, created_at, updated_at, last_used`
+
+// RegisterDevice implements storage.DeviceStore.
+func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) error {
+	now := nowUTC()
+	_, err := s.exec(ctx,
+		`INSERT INTO device_registrations (identity_key, fcm_token, device_id, platform, created_at, updated_at, active, last_used)
+		 VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
+		 ON CONFLICT(fcm_token) DO UPDATE SET identity_key = ?, device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?`,
+		d.IdentityKey, d.FCMToken, d.DeviceID, d.Platform, now, now, now,
+		d.IdentityKey, d.DeviceID, d.Platform, now, now,
+	)
+	return err
+}
+
+// listDevices runs the shared device query with an optional active filter.
+func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly bool) ([]storage.Device, error) {
+	query := `SELECT ` + deviceColumns + ` FROM device_registrations WHERE identity_key = ?`
+	if activeOnly {
+		query += ` AND active = TRUE`
+	}
+	query += ` ORDER BY updated_at DESC`
+
+	rows, err := s.query(ctx, query, identityKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var devices []storage.Device
+	for rows.Next() {
+		var (
+			d        storage.Device
+			deviceID sql.NullString
+			platform sql.NullString
+			lastUsed sql.NullTime
+		)
+		if err := rows.Scan(&d.IdentityKey, &d.FCMToken, &deviceID, &platform, &d.Active, &d.CreatedAt, &d.UpdatedAt, &lastUsed); err != nil {
+			return nil, err
+		}
+		d.DeviceID = nullStr(deviceID)
+		d.Platform = nullStr(platform)
+		d.LastUsed = nullTime(lastUsed)
+		devices = append(devices, d)
+	}
+	return devices, rows.Err()
+}
+
+// ListDevices implements storage.DeviceStore.
+func (s *Store) ListDevices(ctx context.Context, identityKey string) ([]storage.Device, error) {
+	return s.listDevices(ctx, identityKey, false)
+}
+
+// ListActiveDevices implements storage.DeviceStore.
+func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]storage.Device, error) {
+	return s.listDevices(ctx, identityKey, true)
+}
+
+// UpdateDeviceLastUsed implements storage.DeviceStore.
+func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
+	now := nowUTC()
+	_, err := s.exec(ctx,
+		`UPDATE device_registrations SET last_used = ?, updated_at = ? WHERE fcm_token = ?`,
+		now, now, fcmToken,
+	)
+	return err
+}
+
+// DeactivateDevice implements storage.DeviceStore.
+func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
+	_, err := s.exec(ctx,
+		`UPDATE device_registrations SET active = FALSE, updated_at = ? WHERE fcm_token = ?`,
+		nowUTC(), fcmToken,
+	)
+	return err
+}
