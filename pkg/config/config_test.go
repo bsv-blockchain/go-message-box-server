@@ -121,6 +121,49 @@ func TestLoad_HandleCooldownClamp(t *testing.T) {
 	}
 }
 
+// CLIENT_IP_HEADER is optional, trimmed, and validated as an HTTP header field
+// name at load time — the same fail-fast treatment as ADMIN_IDENTITY_KEYS and
+// PAYMAIL_DOMAIN, since anything else could never arrive as a header and would
+// otherwise be a silently-ignored typo.
+func TestLoad_ClientIPHeader(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("CLIENT_IP_HEADER", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientIPHeader != "" {
+		t.Errorf("default ClientIPHeader = %q, want empty", cfg.ClientIPHeader)
+	}
+
+	t.Setenv("CLIENT_IP_HEADER", "  CF-Connecting-IP  ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientIPHeader != "CF-Connecting-IP" {
+		t.Errorf("ClientIPHeader = %q, want CF-Connecting-IP", cfg.ClientIPHeader)
+	}
+
+	// Whitespace-only trims to empty, which is unset rather than a rejection.
+	t.Setenv("CLIENT_IP_HEADER", "   ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientIPHeader != "" {
+		t.Errorf("whitespace-only ClientIPHeader = %q, want empty", cfg.ClientIPHeader)
+	}
+
+	for _, v := range []string{"CF Connecting IP", "CF:Connecting-IP", "CF/Connecting-IP", "\"CF-Connecting-IP\"", "CF,Connecting-IP"} {
+		t.Setenv("CLIENT_IP_HEADER", v)
+		if _, err := Load(); err == nil {
+			t.Errorf("CLIENT_IP_HEADER=%q must be rejected", v)
+		}
+	}
+}
+
 func TestLoad_TrustProxyParsing(t *testing.T) {
 	t.Setenv("SERVER_PRIVATE_KEY", "01")
 
