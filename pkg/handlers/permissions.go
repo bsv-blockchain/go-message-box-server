@@ -66,7 +66,7 @@ func (s *Server) SetPermission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
-	case fee == -1:
+	case fee == storage.FeeBlocked:
 		if isBoxWide {
 			description = fmt.Sprintf("%s %s to %s is now blocked.", actionText, senderText, req.MessageBox)
 		} else {
@@ -136,12 +136,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if perm != nil {
-		status := "always_allow"
-		if perm.RecipientFee == storage.FeeBlocked {
-			status = "blocked"
-		} else if perm.RecipientFee > 0 {
-			status = "payment_required"
-		}
+		status := feeStatus(perm.RecipientFee)
 
 		var desc string
 		if sender != nil {
@@ -355,12 +350,11 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		status := "always_allow"
-		if rf == -1 {
-			status = "blocked"
+		status := feeStatus(rf)
+		switch status {
+		case statusBlocked:
 			blockedRecipients = append(blockedRecipients, rec)
-		} else if rf > 0 {
-			status = "payment_required"
+		case statusPaymentRequired:
 			totalRecipientFees += rf
 		}
 		totalDeliveryFees += deliveryFee

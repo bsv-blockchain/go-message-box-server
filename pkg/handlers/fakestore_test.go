@@ -63,9 +63,9 @@ func (f *fakeStore) tick() time.Time {
 func (f *fakeStore) EnsureSchema(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for box, fee := range map[string]int{"notifications": 10, "inbox": 0, "payment_inbox": 0} {
-		if _, ok := f.fees[box]; !ok {
-			f.fees[box] = fee
+	for _, d := range storage.DefaultDeliveryFees() {
+		if _, ok := f.fees[d.MessageBox]; !ok {
+			f.fees[d.MessageBox] = d.Fee
 		}
 	}
 	return nil

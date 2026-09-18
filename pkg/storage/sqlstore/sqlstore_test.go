@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
@@ -27,6 +28,24 @@ func newSQLite(t *testing.T) storage.Store {
 
 func TestConformance_SQLite(t *testing.T) {
 	storagetest.RunStoreTests(t, newSQLite)
+}
+
+// TestConformance_SQLiteFile runs the suite against a file database with the
+// default connection pool, which is how the server runs. The in-memory store
+// above is pinned to one connection, so nothing in it can ever race.
+func TestConformance_SQLiteFile(t *testing.T) {
+	storagetest.RunStoreTests(t, func(t *testing.T) storage.Store {
+		t.Helper()
+		s, err := New("sqlite3", filepath.Join(t.TempDir(), "messagebox.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EnsureSchema(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.Close() })
+		return s
+	})
 }
 
 // TestSQLiteSchema checks the SQLite DDL actually created every table. It uses

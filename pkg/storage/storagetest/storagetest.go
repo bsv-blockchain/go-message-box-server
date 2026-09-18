@@ -574,6 +574,65 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
+	// A NULL sender escapes SQL's UNIQUE constraint, so a backend that checks
+	// and then inserts in two steps leaves one permanent row per racing caller.
+	// Sequential subtests cannot see that; this one races the writers. Many keys
+	// rather than one, because a single race can be won by luck.
+	t.Run("ConcurrentBoxWideWritesDoNotDuplicate", func(t *testing.T) {
+		const (
+			keys    = 25
+			writers = 8
+		)
+		writes := map[string]func(s storage.Store, box string, fee int) error{
+			"SetPermission": func(s storage.Store, box string, fee int) error {
+				return s.SetPermission(ctx, alice, nil, box, fee)
+			},
+			"SetPermissionIfAbsent": func(s storage.Store, box string, fee int) error {
+				return s.SetPermissionIfAbsent(ctx, alice, nil, box, fee)
+			},
+			// The two share a key, so they have to exclude each other as well.
+			"Mixed": func(s storage.Store, box string, fee int) error {
+				if fee%2 == 0 {
+					return s.SetPermission(ctx, alice, nil, box, fee)
+				}
+				return s.SetPermissionIfAbsent(ctx, alice, nil, box, fee)
+			},
+		}
+		for name, write := range writes {
+			s := newStore(t)
+
+			// One key at a time: only writers to the same key race each other, and
+			// this keeps the connection count at the writer count.
+			errs := make(chan error, keys*writers)
+			for k := 0; k < keys; k++ {
+				box := fmt.Sprintf("box-%02d", k)
+				var wg sync.WaitGroup
+				for w := 0; w < writers; w++ {
+					wg.Add(1)
+					go func(fee int) {
+						defer wg.Done()
+						if err := write(s, box, fee); err != nil {
+							errs <- err
+						}
+					}(w)
+				}
+				wg.Wait()
+			}
+			close(errs)
+			for err := range errs {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			page, err := s.ListPermissions(ctx, storage.PermissionQuery{Recipient: alice, Limit: 1000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.Total != keys {
+				t.Errorf("%s: Total = %d, want %d (one box-wide row per box)", name, page.Total, keys)
+			}
+		}
+	})
+
 	t.Run("FeeBlockedSurvives", func(t *testing.T) {
 		s := newStore(t)
 		setPerm(t, s, alice, ptr(bob), "inbox", storage.FeeBlocked)
