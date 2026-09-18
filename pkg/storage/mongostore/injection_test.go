@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
@@ -18,6 +19,11 @@ import (
 // literal string and never interpreted structurally. NoSQL injection needs the
 // caller to splice a client-supplied *document* into a filter position, which
 // the storage contract makes impossible: there is nowhere to pass one.
+//
+// The one place a value is interpreted as anything but a literal is the handle
+// search, which puts the searcher's text under $regex: FindHandles runs it
+// through regexp.QuoteMeta first — and anchors the prefix tier itself — so a
+// pattern reaches the server with every metacharacter already escaped.
 func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
@@ -140,6 +146,64 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 				t.Errorf("payload matched a fee of %d, want 0", fee)
 			}
 		})
+	}
+
+	// The handle registry is the one place a value becomes a pattern, so it adds
+	// regex metacharacters to the operator payloads above. ".*" and "^" would
+	// match every handle if the text were compiled rather than escaped.
+	const realHandle = "deggen"
+	issued := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := s.(*Store).ClaimHandle(ctx, storage.HandleClaim{
+		Handle: realHandle, Skeleton: "degen", IdentityKey: realRecipient,
+		Certificate: `{"serialNumber":"s1"}`, SerialNumber: "s1",
+		IssuedAt: issued, Now: issued,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, payload := range append([]string{".*", "^", "de*", "d.ggen", "[a-z]+"}, payloads...) {
+		t.Run("FindHandles/"+payload, func(t *testing.T) {
+			for _, m := range []storage.HandleMatch{
+				{Field: storage.HandleFieldHandle, Mode: storage.HandleMatchPrefix, Value: payload, Limit: 10},
+				{Field: storage.HandleFieldHandle, Mode: storage.HandleMatchContains, Value: payload, Limit: 10},
+				{Field: storage.HandleFieldSkeleton, Mode: storage.HandleMatchPrefix, Value: payload, Limit: 10},
+			} {
+				got, err := s.(*Store).FindHandles(ctx, m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got) != 0 {
+					t.Errorf("payload matched %d handles on field %v mode %v, want 0", len(got), m.Field, m.Mode)
+				}
+			}
+		})
+
+		t.Run("GetHandle/"+payload, func(t *testing.T) {
+			for name, get := range map[string]func() (*storage.HandleRecord, error){
+				"handle":   func() (*storage.HandleRecord, error) { return s.(*Store).GetHandle(ctx, payload) },
+				"skeleton": func() (*storage.HandleRecord, error) { return s.(*Store).GetHandleBySkeleton(ctx, payload) },
+				"key":      func() (*storage.HandleRecord, error) { return s.(*Store).GetHandleByIdentityKey(ctx, payload) },
+			} {
+				rec, err := get()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rec != nil {
+					t.Errorf("payload matched a %s record %+v, want nil", name, rec)
+				}
+			}
+		})
+	}
+
+	// The real handle is still there, and still findable by its own text.
+	found, err := s.(*Store).FindHandles(ctx, storage.HandleMatch{
+		Field: storage.HandleFieldHandle, Mode: storage.HandleMatchPrefix, Value: "deg", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Handle != realHandle {
+		t.Errorf("real handle was disturbed: %+v", found)
 	}
 
 	// The real data must still be intact after every payload above.
