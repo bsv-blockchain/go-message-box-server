@@ -175,30 +175,90 @@ func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, err
 	return p, err
 }
 
+// execer is what the box-wide permission statements run on: the pool itself on
+// SQLite, a transaction holding the advisory lock on PostgreSQL.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// withBoxWideLock serialises writers of one box-wide permission.
+//
+// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
+// sender, since NULL != NULL, so nothing in the schema stops two callers both
+// inserting the box-wide row, and the duplicates are permanent. SQLite needs no
+// help: its writers are serialised, so the single guarded statement in
+// insertBoxWideIfAbsent is atomic. Under PostgreSQL's READ COMMITTED two callers
+// can both pass the NOT EXISTS, so the statements run in a transaction behind an
+// advisory lock keyed on the row. Each statement takes a fresh snapshot, so the
+// second caller sees the row the first one committed.
+//
+// hashtext collisions only make two unrelated keys wait for each other.
+//
+// An expression unique index would make the schema enforce this instead:
+//
+//	CREATE UNIQUE INDEX ... ON message_permissions(recipient, COALESCE(sender, ''), message_box)
+//
+// It cannot be created on a database that already holds duplicates, which the
+// pre-interface code could produce, so it wants a dedupe migration of its own.
+// The index has to stay in a code block here: gofmt rewrites a pair of
+// apostrophes into a curly quote in doc comment prose.
+func (s *Store) withBoxWideLock(ctx context.Context, recipient, messageBox string, fn func(execer) error) error {
+	if s.driver != "postgres" {
+		return fn(s.db)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op once committed
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, recipient, messageBox); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// insertBoxWideIfAbsent inserts the box-wide row unless one exists and reports
+// whether it did. The caller holds withBoxWideLock.
+func (s *Store) insertBoxWideIfAbsent(ctx context.Context, ex execer, recipient, messageBox string, recipientFee int, now time.Time) (bool, error) {
+	res, err := ex.ExecContext(ctx, s.rebind(
+		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+		 SELECT ?, NULL, ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+		   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
+		 )`),
+		recipient, messageBox, recipientFee, now, now,
+		recipient, messageBox,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
+}
+
 // SetPermission implements storage.PermissionStore.
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := nowUTC()
 
-	// NULL != NULL in unique constraints for both SQLite and PostgreSQL, so we need special handling
 	if sender == nil {
-		// Try update first
-		res, err := s.exec(ctx,
-			`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`,
-			recipientFee, now, recipient, messageBox,
-		)
-		if err != nil {
+		// Insert first, update on a miss. The other way round leaves a gap between
+		// an UPDATE that matched nothing and the INSERT that follows it.
+		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
+			inserted, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
+			if err != nil || inserted {
+				return err
+			}
+			_, err = ex.ExecContext(ctx, s.rebind(
+				`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`),
+				recipientFee, now, recipient, messageBox,
+			)
 			return err
-		}
-		affected, _ := res.RowsAffected()
-		if affected > 0 {
-			return nil
-		}
-		// Insert
-		_, err = s.exec(ctx,
-			`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, ?)`,
-			recipient, messageBox, recipientFee, now, now,
-		)
-		return err
+		})
 	}
 
 	// For non-null sender, ON CONFLICT works fine
@@ -212,36 +272,14 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 }
 
 // SetPermissionIfAbsent implements storage.PermissionStore.
-//
-// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
-// sender, since NULL != NULL, so the box-wide case cannot rely on ON CONFLICT
-// and guards with a NOT EXISTS subquery instead. That single statement is
-// atomic under SQLite, whose writers are serialised, but not under PostgreSQL's
-// READ COMMITTED: two concurrent callers can both pass the NOT EXISTS and both
-// insert. Neither one modifies an existing row, so the outcome is a duplicate
-// box-wide permission rather than a lost one.
-//
-// Closing the gap needs an expression unique index:
-//
-//	CREATE UNIQUE INDEX ... ON message_permissions(recipient, COALESCE(sender, ''), message_box)
-//
-// It cannot be created on a database that already holds duplicates, so it wants
-// a dedupe migration of its own. The index has to stay in a code block here:
-// gofmt rewrites a pair of apostrophes into a curly quote in doc comment prose.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := nowUTC()
 
 	if sender == nil {
-		_, err := s.exec(ctx,
-			`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
-			 SELECT ?, NULL, ?, ?, ?, ?
-			 WHERE NOT EXISTS (
-			   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
-			 )`,
-			recipient, messageBox, recipientFee, now, now,
-			recipient, messageBox,
-		)
-		return err
+		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
+			_, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
+			return err
+		})
 	}
 
 	_, err := s.exec(ctx,
