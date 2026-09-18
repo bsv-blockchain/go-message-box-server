@@ -175,118 +175,33 @@ func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, err
 	return p, err
 }
 
-// execer is what the box-wide permission statements run on: the pool itself on
-// SQLite, a transaction holding the advisory lock on PostgreSQL.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-// withBoxWideLock serialises writers of one box-wide permission.
-//
-// UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
-// sender, since NULL != NULL, so nothing in the schema stops two callers both
-// inserting the box-wide row, and the duplicates are permanent. SQLite needs no
-// help: its writers are serialised, so the single guarded statement in
-// insertBoxWideIfAbsent is atomic. Under PostgreSQL's READ COMMITTED two callers
-// can both pass the NOT EXISTS, so the statements run in a transaction behind an
-// advisory lock keyed on the row. Each statement takes a fresh snapshot, so the
-// second caller sees the row the first one committed.
-//
-// hashtext collisions only make two unrelated keys wait for each other.
-//
-// An expression unique index would make the schema enforce this instead:
-//
-//	CREATE UNIQUE INDEX ... ON message_permissions(recipient, COALESCE(sender, ''), message_box)
-//
-// It cannot be created on a database that already holds duplicates, which the
-// pre-interface code could produce, so it wants a dedupe migration of its own.
-// The index has to stay in a code block here: gofmt rewrites a pair of
-// apostrophes into a curly quote in doc comment prose.
-func (s *Store) withBoxWideLock(ctx context.Context, recipient, messageBox string, fn func(execer) error) error {
-	if s.driver != "postgres" {
-		return fn(s.db)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() // no-op once committed
-
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, recipient, messageBox); err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// insertBoxWideIfAbsent inserts the box-wide row unless one exists and reports
-// whether it did. The caller holds withBoxWideLock.
-func (s *Store) insertBoxWideIfAbsent(ctx context.Context, ex execer, recipient, messageBox string, recipientFee int, now time.Time) (bool, error) {
-	res, err := ex.ExecContext(ctx, s.rebind(
-		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
-		 SELECT ?, NULL, ?, ?, ?, ?
-		 WHERE NOT EXISTS (
-		   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
-		 )`),
-		recipient, messageBox, recipientFee, now, now,
-		recipient, messageBox,
-	)
-	if err != nil {
-		return false, err
-	}
-	affected, err := res.RowsAffected()
-	return affected > 0, err
-}
-
 // SetPermission implements storage.PermissionStore.
+//
+// The box-wide row (a NULL sender) needs no special handling: the conflict
+// target is the expression index created by EnsureSchema, which folds NULL to
+// the empty string, so one upsert covers both cases.
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := nowUTC()
-
-	if sender == nil {
-		// Insert first, update on a miss. The other way round leaves a gap between
-		// an UPDATE that matched nothing and the INSERT that follows it.
-		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
-			inserted, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
-			if err != nil || inserted {
-				return err
-			}
-			_, err = ex.ExecContext(ctx, s.rebind(
-				`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`),
-				recipientFee, now, recipient, messageBox,
-			)
-			return err
-		})
-	}
-
-	// For non-null sender, ON CONFLICT works fine
 	_, err := s.exec(ctx,
 		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(recipient, sender, message_box) DO UPDATE SET recipient_fee = ?, updated_at = ?`,
-		recipient, *sender, messageBox, recipientFee, now, now, recipientFee, now,
+		 ON CONFLICT `+permissionConflictTarget+` DO UPDATE SET recipient_fee = ?, updated_at = ?`,
+		recipient, sender, messageBox, recipientFee, now, now,
+		recipientFee, now,
 	)
 	return err
 }
 
-// SetPermissionIfAbsent implements storage.PermissionStore.
+// SetPermissionIfAbsent implements storage.PermissionStore. The expression
+// unique index makes DO NOTHING atomic for the box-wide row too, so concurrent
+// callers converge on one row instead of each inserting their own.
 func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	now := nowUTC()
-
-	if sender == nil {
-		return s.withBoxWideLock(ctx, recipient, messageBox, func(ex execer) error {
-			_, err := s.insertBoxWideIfAbsent(ctx, ex, recipient, messageBox, recipientFee, now)
-			return err
-		})
-	}
-
 	_, err := s.exec(ctx,
 		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(recipient, sender, message_box) DO NOTHING`,
-		recipient, *sender, messageBox, recipientFee, now, now,
+		 ON CONFLICT `+permissionConflictTarget+` DO NOTHING`,
+		recipient, sender, messageBox, recipientFee, now, now,
 	)
 	return err
 }
