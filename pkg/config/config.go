@@ -1,10 +1,18 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 )
+
+// maxCooldownDays caps HANDLE_COOLDOWN_DAYS: time.Duration is int64
+// nanoseconds, so beyond ~106751 days the multiply below wraps negative and a
+// negative cooldown would silently disable the guard.
+const maxCooldownDays = 3650
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
@@ -33,6 +41,14 @@ type Config struct {
 	// Wallet
 	WalletStorageURL string
 	BSVNetwork       string
+
+	// Paymail profile lookup (optional)
+	PaymailDomain     string
+	PaymailHost       string
+	HandleCooldown    time.Duration
+	AdminIdentityKeys []string
+	LookupRatePerMin  int
+	TrustProxy        bool
 }
 
 // Load reads configuration from environment variables.
@@ -60,6 +76,41 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SERVER_PRIVATE_KEY is not defined in environment variables")
 	}
 
+	cfg.PaymailDomain = strings.ToLower(strings.TrimSpace(os.Getenv("PAYMAIL_DOMAIN")))
+	cfg.PaymailHost = strings.TrimRight(strings.TrimSpace(os.Getenv("PAYMAIL_HOST")), "/")
+	if cfg.PaymailDomain != "" {
+		// A scheme, port, user part or space would leave every certificate's
+		// paymail field unmatchable and the well-known document malformed.
+		if strings.ContainsAny(cfg.PaymailDomain, "/:@ \t") {
+			return nil, fmt.Errorf("PAYMAIL_DOMAIN must be a bare domain such as example.com, got %q", cfg.PaymailDomain)
+		}
+		if cfg.PaymailHost == "" {
+			return nil, fmt.Errorf("PAYMAIL_HOST is required when PAYMAIL_DOMAIN is set")
+		}
+	}
+	cooldownDays := getEnvInt("HANDLE_COOLDOWN_DAYS", 30)
+	if cooldownDays > maxCooldownDays {
+		cooldownDays = maxCooldownDays
+	}
+	cfg.HandleCooldown = time.Duration(cooldownDays) * 24 * time.Hour
+	cfg.LookupRatePerMin = getEnvInt("LOOKUP_RATE_PER_MIN", 60)
+	cfg.TrustProxy = strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true")
+	seenAdmin := make(map[string]bool)
+	for _, k := range strings.Split(os.Getenv("ADMIN_IDENTITY_KEYS"), ",") {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k == "" {
+			continue
+		}
+		if !isCompressedPubKeyHex(k) {
+			return nil, fmt.Errorf("ADMIN_IDENTITY_KEYS entry %q is not a compressed public key in hex", k)
+		}
+		if seenAdmin[k] {
+			continue
+		}
+		seenAdmin[k] = true
+		cfg.AdminIdentityKeys = append(cfg.AdminIdentityKeys, k)
+	}
+
 	port := getEnv("PORT", "")
 	if port == "" {
 		port = getEnv("HTTP_PORT", "")
@@ -84,6 +135,24 @@ func Load() (*Config, error) {
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// isCompressedPubKeyHex reports whether s is a 33-byte compressed public key in
+// lowercase hex, the form a BRC-104 identity key takes. Anything else can never
+// match a caller, so it is a typo rather than an admin.
+func isCompressedPubKeyHex(s string) bool {
+	if len(s) != 66 || (!strings.HasPrefix(s, "02") && !strings.HasPrefix(s, "03")) {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v >= 0 {
 		return v
 	}
 	return fallback
