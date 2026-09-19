@@ -15,8 +15,10 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
+	"github.com/bsv-blockchain/go-message-box-server/pkg/handles"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/profilecert"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/profilecert/certtest"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 const testDomain = "example.com"
@@ -213,6 +215,35 @@ func TestPutHandle_Lifecycle(t *testing.T) {
 	wantStatus(t, e.put(bob, "deggen", e.now().Add(time.Minute), nil), 409, "ERR_HANDLE_COOLDOWN")
 	wantStatus(t, e.do("PUT", "/api/handle", same), 409, "ERR_STALE_CERTIFICATE")
 	wantStatus(t, e.put(bob, "deggen", e.advance(31*24*time.Hour), nil), 201, "")
+}
+
+// TestPutHandle_ReleaseIgnoresClaimTimeValidation models a handle that was
+// valid when claimed but would fail today's format/reserved-word check — e.g.
+// the reserved list grew after it was registered. Release must still work:
+// Validate is a claim-time gate, not a precondition for giving a handle back.
+func TestPutHandle_ReleaseIgnoresClaimTimeValidation(t *testing.T) {
+	e := newLookupEnv(t)
+	alice := testKey(t)
+	t0 := e.now()
+
+	// Seeded directly in the registry, bypassing PutHandle's Validate call, the
+	// way a handle claimed under an older, looser rule set would already exist.
+	cert := certtest.Profile(t, alice, "admin", testDomain, t0, nil)
+	p, err := profilecert.Parse(t.Context(), cert, testDomain, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := e.srv.Store.(*fakeStore)
+	if _, err := fake.ClaimHandle(t.Context(), storage.HandleClaim{
+		Handle: p.Handle, Skeleton: handles.Skeleton(p.Handle), IdentityKey: p.IdentityKey,
+		Certificate: p.JSON, SerialNumber: p.SerialNumber, IssuedAt: p.IssuedAt, Now: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tombstone := certtest.Profile(t, alice, "admin", testDomain, t0.Add(time.Second), map[string]string{"released": "true"})
+	w := e.do("PUT", "/api/handle", tombstone)
+	wantStatus(t, w, 200, "")
 }
 
 func TestLookupRoutes_RequiresEnable(t *testing.T) {
