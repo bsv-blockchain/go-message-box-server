@@ -102,7 +102,7 @@ func (f *fakeStore) tryClaim(c storage.HandleClaim) (storage.ClaimResult, bool) 
 
 	if rec != nil && rec.IdentityKey != nil {
 		if *rec.IdentityKey == c.IdentityKey && rec.IssuedAt.Before(c.IssuedAt) && rec.SerialNumber != c.SerialNumber {
-			rec.Certificate, rec.SerialNumber, rec.IssuedAt, rec.UpdatedAt = &cert, c.SerialNumber, c.IssuedAt, f.tick()
+			rec.Skeleton, rec.Certificate, rec.SerialNumber, rec.IssuedAt, rec.UpdatedAt = c.Skeleton, &cert, c.SerialNumber, c.IssuedAt, f.tick()
 			return storage.ClaimUpdated, true
 		}
 		return 0, false

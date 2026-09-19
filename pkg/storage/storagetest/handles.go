@@ -286,6 +286,24 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		}
 	})
 
+	t.Run("OwnerUpdateStoresNewSkeleton", func(t *testing.T) {
+		s := newStore(t)
+		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimCreated)
+		// The fold table can grow between the insert and a later re-certification
+		// by the same owner, so — as with a reclaim — the claim's skeleton, not
+		// the stored one, is what the row must end with.
+		mustClaim(t, s, claim("deggen", "degn", alice, "s2", handleT0.Add(time.Minute)), storage.ClaimUpdated)
+		if rec, _ := s.GetHandle(ctx, "deggen"); rec == nil || rec.Skeleton != "degn" {
+			t.Errorf("owner-updated skeleton = %v, want degn", rec)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degn"); r == nil || r.Handle != "deggen" {
+			t.Errorf("GetHandleBySkeleton(degn) = %v, want deggen", r)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degen"); r != nil {
+			t.Errorf("stale skeleton still resolves to %v", r)
+		}
+	})
+
 	t.Run("AdminReleaseSkipsCooldown", func(t *testing.T) {
 		s := newStore(t)
 		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimCreated)

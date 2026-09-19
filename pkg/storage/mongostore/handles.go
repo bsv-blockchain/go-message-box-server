@@ -149,7 +149,7 @@ func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.C
 			"serialNumber": bson.M{"$ne": c.SerialNumber},
 		},
 		bson.M{"$set": bson.M{
-			"certificate": c.Certificate, "serialNumber": c.SerialNumber,
+			"skeleton": c.Skeleton, "certificate": c.Certificate, "serialNumber": c.SerialNumber,
 			"issuedAt": c.IssuedAt, "updatedAt": ts,
 		}},
 	)
