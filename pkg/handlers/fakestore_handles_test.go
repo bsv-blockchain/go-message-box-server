@@ -101,7 +101,12 @@ func (f *fakeStore) tryClaim(c storage.HandleClaim) (storage.ClaimResult, bool) 
 	rec := f.handles[c.Handle]
 
 	if rec != nil && rec.IdentityKey != nil {
-		if *rec.IdentityKey == c.IdentityKey && rec.IssuedAt.Before(c.IssuedAt) && rec.SerialNumber != c.SerialNumber {
+		// The owner update writes the claim's skeleton, not the stored one, so it
+		// meets the unique index exactly as a reclaim and an insert do: a handle
+		// the fold table has moved onto a skeleton another row holds is refused
+		// here and explained by the diagnosis.
+		if *rec.IdentityKey == c.IdentityKey && rec.IssuedAt.Before(c.IssuedAt) && rec.SerialNumber != c.SerialNumber &&
+			!f.skeletonTakenLocked(c.Skeleton, c.Handle) {
 			rec.Skeleton, rec.Certificate, rec.SerialNumber, rec.IssuedAt, rec.UpdatedAt = c.Skeleton, &cert, c.SerialNumber, c.IssuedAt, f.tick()
 			return storage.ClaimUpdated, true
 		}
