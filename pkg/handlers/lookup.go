@@ -176,15 +176,6 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_CERTIFICATE", err.Error())
 		return
 	}
-	switch err := handles.Validate(p.Handle); {
-	case errors.Is(err, handles.ErrReservedHandle):
-		writeError(w, http.StatusConflict, "ERR_HANDLE_RESERVED", "That handle is reserved.")
-		return
-	case err != nil:
-		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 3-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
-		return
-	}
-
 	if p.Released {
 		until := now.Add(s.lookup.Cooldown)
 		err := s.handles.ReleaseHandle(r.Context(), storage.HandleRelease{
@@ -203,6 +194,18 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, json.RawMessage(p.JSON))
+		return
+	}
+
+	// Validate is a claim-time gate: it must not block giving back a handle
+	// that was valid when claimed but would fail the check today (e.g. the
+	// reserved list grew since).
+	switch err := handles.Validate(p.Handle); {
+	case errors.Is(err, handles.ErrReservedHandle):
+		writeError(w, http.StatusConflict, "ERR_HANDLE_RESERVED", "That handle is reserved.")
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 3-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
 		return
 	}
 

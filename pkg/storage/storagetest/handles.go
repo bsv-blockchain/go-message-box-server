@@ -264,6 +264,50 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		wantClaimErr(t, s, claim("deggen", "degn", alice, "s2", relAt.Add(time.Minute)), storage.ErrHandleTooSimilar)
 	})
 
+	t.Run("OwnerUpdateKeepsSkeletonUnique", func(t *testing.T) {
+		s := newStore(t)
+		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimCreated)
+		mustClaim(t, s, claim("xyz", "degn", bob, "s1", handleT0), storage.ClaimCreated)
+		// An owner re-certifying stores the claim's skeleton too, so a fold-table
+		// change that folds deggen onto a skeleton another row holds collides
+		// like any other. The answer must name the collision: a stale-certificate
+		// conflict would send the owner back for a newer certificate, and no
+		// certificate they can issue would make this write land.
+		wantClaimErr(t, s, claim("deggen", "degn", alice, "s2", handleT0.Add(time.Minute)), storage.ErrHandleTooSimilar)
+
+		// The refused update left both rows exactly as they were.
+		rec, _ := s.GetHandle(ctx, "deggen")
+		if rec == nil || rec.Skeleton != "degen" || rec.SerialNumber != "s1" || !rec.IssuedAt.Equal(handleT0) {
+			t.Errorf("refused owner update changed the row = %+v", rec)
+		}
+		if rec != nil && (rec.Certificate == nil || *rec.Certificate != `{"serialNumber":"s1"}`) {
+			t.Errorf("refused owner update changed the certificate = %v", rec.Certificate)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degn"); r == nil || r.Handle != "xyz" {
+			t.Errorf("GetHandleBySkeleton(degn) = %v, want xyz", r)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degen"); r == nil || r.Handle != "deggen" {
+			t.Errorf("GetHandleBySkeleton(degen) = %v, want deggen", r)
+		}
+
+		// A released row goes on reserving its skeleton, so releasing the row in
+		// the way does not open the collision up — the owner update meets the
+		// same reservation a fresh claim of that look-alike would.
+		b := bob
+		relAt := handleT0.Add(2 * time.Minute)
+		if err := s.ReleaseHandle(ctx, storage.HandleRelease{Handle: "xyz", Owner: &b, IssuedAt: &relAt, ReleasedBy: "owner", Now: relAt}); err != nil {
+			t.Fatal(err)
+		}
+		wantClaimErr(t, s, claim("deggen", "degn", alice, "s3", relAt.Add(time.Minute)), storage.ErrHandleTooSimilar)
+
+		// The refusals left the row able to take an ordinary update: a claim is
+		// rejected, not the owner.
+		mustClaim(t, s, claim("deggen", "deggen-2", alice, "s4", relAt.Add(2*time.Minute)), storage.ClaimUpdated)
+		if rec, _ := s.GetHandle(ctx, "deggen"); rec == nil || rec.Skeleton != "deggen-2" || rec.SerialNumber != "s4" {
+			t.Errorf("owner update after refusals = %+v", rec)
+		}
+	})
+
 	t.Run("ReclaimStoresNewSkeleton", func(t *testing.T) {
 		s := newStore(t)
 		a := alice
@@ -277,6 +321,24 @@ func RunHandleStoreTests(t *testing.T, newStore NewHandleStoreFunc) {
 		mustClaim(t, s, claim("deggen", "degn", alice, "s2", relAt.Add(time.Minute)), storage.ClaimCreated)
 		if rec, _ := s.GetHandle(ctx, "deggen"); rec == nil || rec.Skeleton != "degn" {
 			t.Errorf("reclaimed skeleton = %v, want degn", rec)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degn"); r == nil || r.Handle != "deggen" {
+			t.Errorf("GetHandleBySkeleton(degn) = %v, want deggen", r)
+		}
+		if r, _ := s.GetHandleBySkeleton(ctx, "degen"); r != nil {
+			t.Errorf("stale skeleton still resolves to %v", r)
+		}
+	})
+
+	t.Run("OwnerUpdateStoresNewSkeleton", func(t *testing.T) {
+		s := newStore(t)
+		mustClaim(t, s, claim("deggen", "degen", alice, "s1", handleT0), storage.ClaimCreated)
+		// The fold table can grow between the insert and a later re-certification
+		// by the same owner, so — as with a reclaim — the claim's skeleton, not
+		// the stored one, is what the row must end with.
+		mustClaim(t, s, claim("deggen", "degn", alice, "s2", handleT0.Add(time.Minute)), storage.ClaimUpdated)
+		if rec, _ := s.GetHandle(ctx, "deggen"); rec == nil || rec.Skeleton != "degn" {
+			t.Errorf("owner-updated skeleton = %v, want degn", rec)
 		}
 		if r, _ := s.GetHandleBySkeleton(ctx, "degn"); r == nil || r.Handle != "deggen" {
 			t.Errorf("GetHandleBySkeleton(degn) = %v, want deggen", r)

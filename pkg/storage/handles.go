@@ -183,10 +183,11 @@ type HandleReader interface {
 type HandleStore interface {
 	HandleReader
 
-	// ClaimHandle registers, updates or reclaims. A created or reclaimed row
-	// holds c.Skeleton, so a reclaim meets the look-alike constraint like an
-	// insert and reports ErrHandleTooSimilar when another row holds it. Times
-	// arrive UTC truncated to milliseconds and are compared exactly. Errors:
+	// ClaimHandle registers, updates or reclaims. Every row it writes holds
+	// c.Skeleton, not the one the row was created with, so an update and a
+	// reclaim meet the look-alike constraint exactly like an insert and report
+	// ErrHandleTooSimilar when another row holds it. Times arrive UTC truncated
+	// to milliseconds and are compared exactly. Errors:
 	// ErrHandleTaken, ErrHandleTooSimilar, ErrKeyHasHandle, ErrHandleCooldown,
 	// ErrStaleCertificate.
 	ClaimHandle(ctx context.Context, c HandleClaim) (ClaimResult, error)
@@ -223,6 +224,27 @@ func DiagnoseClaim(ctx context.Context, r HandleReader, c HandleClaim, cause err
 				rec.Certificate != nil && *rec.Certificate == c.Certificate {
 				return ClaimUnchanged, nil
 			}
+			// The certificate is strictly newer and reuses no serial, so the
+			// owner update's own guards accepted it and what refused the write
+			// was the skeleton it stores. A fold-table change can fold a handle
+			// onto a skeleton another row already reserves; calling that a stale
+			// certificate would send the owner back for a newer one, which is
+			// the one thing that cannot fix it.
+			if c.IssuedAt.After(rec.IssuedAt) && c.SerialNumber != rec.SerialNumber {
+				sim, err := r.GetHandleBySkeleton(ctx, c.Skeleton)
+				if err != nil {
+					return 0, err
+				}
+				if sim != nil && sim.Handle != c.Handle {
+					return 0, ErrHandleTooSimilar
+				}
+				// The row as it stands would take this very certificate and no
+				// other row holds the skeleton, so the collision the write lost to
+				// is already gone — the row that held it moved off between the two.
+				// Calling that stale would be a conflict no certificate can clear;
+				// the claim never applied, so the caller retries instead.
+				return 0, claimRaced(cause)
+			}
 			return 0, ErrStaleCertificate
 		}
 		if !c.IssuedAt.After(rec.IssuedAt) {
@@ -255,10 +277,16 @@ func DiagnoseClaim(ctx context.Context, r HandleReader, c HandleClaim, cause err
 	// Nothing in the registry refuses this claim, so the row the write collided
 	// with is already gone — a release that landed between the two. The caller
 	// retries rather than reporting a fault for a claim that would now apply.
+	return 0, claimRaced(cause)
+}
+
+// claimRaced wraps the backend's error, if it gave one, in ErrClaimRaced: the
+// write was refused and the registry read afterwards no longer explains it.
+func claimRaced(cause error) error {
 	if cause == nil {
-		return 0, fmt.Errorf("%w: the registry shows no conflict", ErrClaimRaced)
+		return fmt.Errorf("%w: the registry shows no conflict", ErrClaimRaced)
 	}
-	return 0, fmt.Errorf("%w: %w", ErrClaimRaced, cause)
+	return fmt.Errorf("%w: %w", ErrClaimRaced, cause)
 }
 
 // DiagnoseRelease explains why a release write matched nothing.
