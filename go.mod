@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	firebase.google.com/go/v4 v4.19.0
-	github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0
+	github.com/bsv-blockchain/go-bsv-middleware v0.16.0
 	github.com/bsv-blockchain/go-sdk v1.6.0
 	github.com/bsv-blockchain/go-wallet-toolbox v0.186.3
 	github.com/lib/pq v1.12.3

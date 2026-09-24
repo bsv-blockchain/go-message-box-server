@@ -104,8 +104,8 @@ github.com/bsv-blockchain/go-batcher/v2 v2.1.0 h1:hlg84xRA8W//iQk99A2cJ5yc1EH7vM
 github.com/bsv-blockchain/go-batcher/v2 v2.1.0/go.mod h1:GSV0XBMQC17T6EgPylmzi4pTtgQResomIemPe5Oi8DE=
 github.com/bsv-blockchain/go-bc v1.2.0 h1:6VDbUHyi4ZAQHzTi1Xzv562SHyvfTVnRYx4bVNTX1A8=
 github.com/bsv-blockchain/go-bc v1.2.0/go.mod h1:G8MZVVmGegvSogql+7N7DVwC7GvxJEk8PIjqPP5/mOE=
-github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0 h1:/kcm6wwNYGYwKpUllpIhbfoK5IPe9w0FdLp0AsxSHQs=
-github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0/go.mod h1:wQKzFuyzhScUzsH0nbFXY3IHFrSlhY70/VkOitHADjE=
+github.com/bsv-blockchain/go-bsv-middleware v0.16.0 h1:vXPNebOEiKvR79c8qnzS30iWD47yV6WD6/wh6vbsVv8=
+github.com/bsv-blockchain/go-bsv-middleware v0.16.0/go.mod h1:wQKzFuyzhScUzsH0nbFXY3IHFrSlhY70/VkOitHADjE=
 github.com/bsv-blockchain/go-bt/v2 v2.7.1 h1:yiinRgtCryYFea4OVgUSi2qUd+ubfAJP7yKz4Z8AVAk=
 github.com/bsv-blockchain/go-bt/v2 v2.7.1/go.mod h1:v/HVFIBC2ZIt1bZ88F2TECfDuIG7XeeLYphy18NeQmM=
 github.com/bsv-blockchain/go-chaincfg v1.7.0 h1:TRQk8l+iIQqy/ekIW7452K6RJaVAK+Svo56q7BXo+0k=
