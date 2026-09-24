@@ -104,8 +104,8 @@ github.com/bsv-blockchain/go-batcher/v2 v2.1.0 h1:hlg84xRA8W//iQk99A2cJ5yc1EH7vM
 github.com/bsv-blockchain/go-batcher/v2 v2.1.0/go.mod h1:GSV0XBMQC17T6EgPylmzi4pTtgQResomIemPe5Oi8DE=
 github.com/bsv-blockchain/go-bc v1.2.0 h1:6VDbUHyi4ZAQHzTi1Xzv562SHyvfTVnRYx4bVNTX1A8=
 github.com/bsv-blockchain/go-bc v1.2.0/go.mod h1:G8MZVVmGegvSogql+7N7DVwC7GvxJEk8PIjqPP5/mOE=
-github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924153356-66887ae144aa h1:Df/XMMOSAchBJn96vG+Wc7KssND5sK/yLjNUvWGIh9w=
-github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924153356-66887ae144aa/go.mod h1:IT3vymkitXfwSIj0sFMQSjELspbMJ3vQ9hBlTkhSStg=
+github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0 h1:/kcm6wwNYGYwKpUllpIhbfoK5IPe9w0FdLp0AsxSHQs=
+github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0/go.mod h1:wQKzFuyzhScUzsH0nbFXY3IHFrSlhY70/VkOitHADjE=
 github.com/bsv-blockchain/go-bt/v2 v2.7.1 h1:yiinRgtCryYFea4OVgUSi2qUd+ubfAJP7yKz4Z8AVAk=
 github.com/bsv-blockchain/go-bt/v2 v2.7.1/go.mod h1:v/HVFIBC2ZIt1bZ88F2TECfDuIG7XeeLYphy18NeQmM=
 github.com/bsv-blockchain/go-chaincfg v1.7.0 h1:TRQk8l+iIQqy/ekIW7452K6RJaVAK+Svo56q7BXo+0k=
@@ -118,8 +118,8 @@ github.com/bsv-blockchain/go-p2p-message-bus v0.1.24 h1:1s6KXWHtG9cBtbF3ZyQlAaa+
 github.com/bsv-blockchain/go-p2p-message-bus v0.1.24/go.mod h1:2pvrS51mabnjjzvksuqucd4jQNeqEidg9/OD/iCyifc=
 github.com/bsv-blockchain/go-safe-conversion v1.2.0 h1:HwLWaxqm2OyU5/2BRQ8kwdn25QyX2HXr0JkfSyTG3DU=
 github.com/bsv-blockchain/go-safe-conversion v1.2.0/go.mod h1:62Eq2980j4BygfqJhd/ObGRHET8ubEy2rBdGi4k6nsw=
-github.com/bsv-blockchain/go-sdk v1.5.3-0.20260924152901-1703d7cc8ab4 h1:BTQ+E6828X3rK6eTol0q/A3DviNYkZhJk3P+xJ9W5zw=
-github.com/bsv-blockchain/go-sdk v1.5.3-0.20260924152901-1703d7cc8ab4/go.mod h1:clGHSZoOwrnqJrzEw4VHYZk3JQXbrr+mnybCXZCdrt4=
+github.com/bsv-blockchain/go-sdk v1.6.0 h1:VTi/ceJFdVndLNPvoUh53z2+Yf2RxMMuQj+dLc3C9jg=
+github.com/bsv-blockchain/go-sdk v1.6.0/go.mod h1:F7wz/PdFcLNIFlvkzKJ7dZexbZoRzwR0VzQYKUCaXqU=
 github.com/bsv-blockchain/go-subtree v1.5.0 h1:rBp1gqmiDPrsBYS8wr55Jx4EYeXBn7/GSp5ceBJbgvs=
 github.com/bsv-blockchain/go-subtree v1.5.0/go.mod h1:FgDmkR0YAAsIDn8hUM7hzsg4OeN+EiGtek5RhS7zzmI=
 github.com/bsv-blockchain/go-teranode-p2p-client v0.3.0 h1:hT0xqASDX/dQZZjMpZSrNAgbxqIc63DqsDnCJCzdmQg=
@@ -504,8 +504,8 @@ github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee/go.mod h1:yWu
 github.com/mr-tron/base58 v1.1.2/go.mod h1:BinMc/sQntlIE1frQmRFPUoPA1Zkr8VRgBdjWI2mNwc=
 github.com/mr-tron/base58 v1.3.0 h1:K6Y13R2h+dku0wOqKtecgRnBUBPrZzLZy5aIj8lCcJI=
 github.com/mr-tron/base58 v1.3.0/go.mod h1:2BuubE67DCSWwVfx37JWNG8emOC0sHEU4/HpcYgCLX8=
-github.com/mrz1836/go-whatsonchain v1.2.1 h1:vc7Zuan9+6zqrEPQpF/OKusYbBMejZAq/iwDJanRoiE=
-github.com/mrz1836/go-whatsonchain v1.2.1/go.mod h1:SAMQltVzWjjBSSIM9KBoLRTFuv9fIrejyEUK95qPDZI=
+github.com/mrz1836/go-whatsonchain v1.3.0 h1:uOq5mHPTMUfiyMAFv+wqRgZXZ5L3CrObaIdShnX/yzU=
+github.com/mrz1836/go-whatsonchain v1.3.0/go.mod h1:SAMQltVzWjjBSSIM9KBoLRTFuv9fIrejyEUK95qPDZI=
 github.com/multiformats/go-base32 v0.1.0 h1:pVx9xoSPqEIQG8o+UbAe7DNi51oej1NtK+aGkbLYxPE=
 github.com/multiformats/go-base32 v0.1.0/go.mod h1:Kj3tFY6zNr+ABYMqeUNeGvkIC/UYgtWibDcT0rExnbI=
 github.com/multiformats/go-base36 v0.2.0 h1:lFsAbNOGeKtuKozrtBsAkSVhv1p9D0/qedU9rQyccr0=

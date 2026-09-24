@@ -4,8 +4,8 @@ go 1.27.0
 
 require (
 	firebase.google.com/go/v4 v4.19.0
-	github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924153356-66887ae144aa
-	github.com/bsv-blockchain/go-sdk v1.5.3-0.20260924152901-1703d7cc8ab4
+	github.com/bsv-blockchain/go-bsv-middleware v0.15.2-0.20260924163752-417edaf607a0
+	github.com/bsv-blockchain/go-sdk v1.6.0
 	github.com/bsv-blockchain/go-wallet-toolbox v0.186.3
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.52
@@ -179,7 +179,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/mr-tron/base58 v1.3.0 // indirect
-	github.com/mrz1836/go-whatsonchain v1.2.1 // indirect
+	github.com/mrz1836/go-whatsonchain v1.3.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
 	github.com/multiformats/go-multiaddr v0.16.1 // indirect
