@@ -6,7 +6,10 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 go build -o messagebox-server ./cmd/server
+# nobdk selects go-wallet-toolbox's pure-Go signature backend. The default
+# backend links go-sdk/bitcoin-sv gobdk, a prebuilt glibc C++ library that
+# does not link on Alpine (musl). CGO stays on for mattn/go-sqlite3.
+RUN CGO_ENABLED=1 go build -tags nobdk -o messagebox-server ./cmd/server
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
