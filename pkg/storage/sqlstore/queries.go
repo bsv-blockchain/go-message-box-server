@@ -87,10 +87,50 @@ func (s *Store) ListMessages(ctx context.Context, recipient, messageBox string) 
 
 	rows, err := s.query(ctx,
 		`SELECT messageId, body, sender, created_at, updated_at FROM messages
-		 WHERE recipient = ? AND messageBoxId = ?
-		 ORDER BY created_at ASC, messageId ASC`,
+		 WHERE recipient = ? AND messageBoxId = ? `+s.messagesOrderBy(),
 		recipient, boxID,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []storage.Message
+	for rows.Next() {
+		var m storage.Message
+		if err := rows.Scan(&m.MessageID, &m.Body, &m.Sender, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// PageMessages implements storage.MessagePager. The messages table's
+// (recipient, messageBoxId, created_at, messageId) index already covers the
+// equality prefix and the full ORDER BY; a MessageID filter rides along as a
+// residual predicate, and messageId's own UNIQUE index makes it cheap even
+// when the planner picks that one instead.
+func (s *Store) PageMessages(ctx context.Context, q storage.MessagePageQuery) ([]storage.Message, error) {
+	boxID, err := s.messageBoxID(ctx, q.Recipient, q.MessageBox)
+	if err != nil {
+		return nil, err
+	}
+	if boxID == 0 {
+		return nil, nil
+	}
+
+	query := `SELECT messageId, body, sender, created_at, updated_at FROM messages
+	          WHERE recipient = ? AND messageBoxId = ?`
+	args := []any{q.Recipient, boxID}
+	if q.MessageID != nil {
+		query += ` AND messageId = ?`
+		args = append(args, *q.MessageID)
+	}
+	query += ` ` + s.messagesOrderBy() + ` LIMIT ? OFFSET ?`
+	args = append(args, q.FetchLimit, q.Offset)
+
+	rows, err := s.query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

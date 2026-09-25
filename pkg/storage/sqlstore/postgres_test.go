@@ -40,3 +40,17 @@ func TestConformance_Postgres(t *testing.T) {
 		return newPostgres(t, dsn)
 	})
 }
+
+// TestPageMessages_TieBreakIsByteWise_Postgres pins the fix for
+// (*Store).messagesOrderBy against a real server: a PostgreSQL database
+// created with a normal locale (the official postgres:16 image's default is
+// en_US.utf8) sorts text case-insensitively-ish, so without the explicit
+// COLLATE "C" this test fails on Postgres while the identical query text
+// passes on SQLite.
+func TestPageMessages_TieBreakIsByteWise_Postgres(t *testing.T) {
+	dsn := os.Getenv("POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN not set")
+	}
+	testPageMessagesTieBreakIsByteWise(t, newPostgres(t, dsn).(*Store))
+}

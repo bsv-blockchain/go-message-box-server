@@ -209,6 +209,84 @@ func TestLoad_PaymailDomainMustBeBare(t *testing.T) {
 	}
 }
 
+// Defaults mirror the TS reference server's "standard" resource profile
+// (config/resources.ts), so an unconfigured Go deployment pages the same way.
+func TestLoad_ListMessagesDefaults(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListDefaultLimit != 1000 || cfg.ListMaxLimit != 1000 || cfg.ListMaxOffset != 100_000 || cfg.ListMaxResponseBytes != 8*1024*1024 {
+		t.Errorf("list pagination defaults = %+v", cfg)
+	}
+}
+
+func TestLoad_ListMessagesOverrides(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("LIST_DEFAULT_LIMIT", "50")
+	t.Setenv("LIST_MAX_LIMIT", "200")
+	t.Setenv("LIST_MAX_OFFSET", "5000")
+	t.Setenv("LIST_MAX_RESPONSE_BYTES", "1048576")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListDefaultLimit != 50 || cfg.ListMaxLimit != 200 || cfg.ListMaxOffset != 5000 || cfg.ListMaxResponseBytes != 1048576 {
+		t.Errorf("list pagination overrides = %+v", cfg)
+	}
+}
+
+// -1 means unlimited, mirroring the TS reference server's own resource knobs.
+func TestLoad_ListMessagesUnlimited(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	for _, key := range []string{"LIST_MAX_LIMIT", "LIST_MAX_OFFSET", "LIST_MAX_RESPONSE_BYTES"} {
+		t.Setenv(key, "-1")
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListMaxLimit != -1 || cfg.ListMaxOffset != -1 || cfg.ListMaxResponseBytes != -1 {
+		t.Errorf("unlimited overrides = %+v", cfg)
+	}
+}
+
+func TestLoad_ListMessagesInvalid(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	for _, key := range []string{"LIST_DEFAULT_LIMIT", "LIST_MAX_LIMIT", "LIST_MAX_OFFSET", "LIST_MAX_RESPONSE_BYTES"} {
+		for _, v := range []string{"0", "-2", "abc", "1.5"} {
+			t.Setenv(key, v)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s=%q must be rejected", key, v)
+			}
+			t.Setenv(key, "")
+		}
+	}
+}
+
+// A default above the max is a startup error, matching the TS reference
+// server's own resources.ts check.
+func TestLoad_ListDefaultLimitMustNotExceedMax(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("LIST_DEFAULT_LIMIT", "2000")
+	t.Setenv("LIST_MAX_LIMIT", "1000")
+
+	if _, err := Load(); err == nil {
+		t.Error("LIST_DEFAULT_LIMIT > LIST_MAX_LIMIT must be rejected")
+	}
+
+	// An unlimited max never conflicts with any default.
+	t.Setenv("LIST_MAX_LIMIT", "-1")
+	if _, err := Load(); err != nil {
+		t.Errorf("LIST_MAX_LIMIT=-1 must accept any default, got %v", err)
+	}
+}
+
 func TestLoad_AdminIdentityKeys(t *testing.T) {
 	t.Setenv("SERVER_PRIVATE_KEY", "01")
 

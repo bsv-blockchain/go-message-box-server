@@ -25,10 +25,21 @@ type MessageOut struct {
 }
 
 // ListMessagesResponse represents the response for listMessages.
-// @Description Response containing list of messages
+// @Description Response containing a page of messages plus pagination state
 type ListMessagesResponse struct {
 	Status   string       `json:"status" example:"success"`
 	Messages []MessageOut `json:"messages"`
+	// Limit is the page size that was applied (the request's limit, or the
+	// server's configured default when none was given).
+	Limit int `json:"limit" example:"1000"`
+	// Offset is the request's offset (or skip), echoed back.
+	Offset int `json:"offset" example:"0"`
+	// NextOffset is Offset plus the number of messages actually returned; pass
+	// it as the next request's offset to continue paging.
+	NextOffset int `json:"nextOffset" example:"1000"`
+	// HasMore reports whether at least one further matching message exists
+	// beyond this page.
+	HasMore bool `json:"hasMore" example:"false"`
 }
 
 // SendMessageResult represents a single send result.

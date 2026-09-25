@@ -59,6 +59,16 @@ type Config struct {
 	// handlers.RateLimiter and README.md's Configuration section. It is not an
 	// authentication signal.
 	ClientIPHeader string
+
+	// POST /listMessages pagination bounds. Defaults match the TS reference
+	// server's "standard" resource profile. -1 means no cap on any of the four,
+	// including ListDefaultLimit: handlers.parseListPagination substitutes the
+	// JS safe-integer maximum for a -1 default, mirroring the TS reference
+	// server exactly.
+	ListDefaultLimit     int
+	ListMaxLimit         int
+	ListMaxOffset        int
+	ListMaxResponseBytes int
 }
 
 // Load reads configuration from environment variables.
@@ -138,6 +148,30 @@ func Load() (*Config, error) {
 		cfg.AdminIdentityKeys = append(cfg.AdminIdentityKeys, k)
 	}
 
+	listDefaultLimit, err := getEnvListBound("LIST_DEFAULT_LIMIT", 1000)
+	if err != nil {
+		return nil, err
+	}
+	listMaxLimit, err := getEnvListBound("LIST_MAX_LIMIT", 1000)
+	if err != nil {
+		return nil, err
+	}
+	listMaxOffset, err := getEnvListBound("LIST_MAX_OFFSET", 100_000)
+	if err != nil {
+		return nil, err
+	}
+	listMaxResponseBytes, err := getEnvListBound("LIST_MAX_RESPONSE_BYTES", 8*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	if listMaxLimit != -1 && listDefaultLimit > listMaxLimit {
+		return nil, fmt.Errorf("LIST_DEFAULT_LIMIT (%d) must not exceed LIST_MAX_LIMIT (%d)", listDefaultLimit, listMaxLimit)
+	}
+	cfg.ListDefaultLimit = listDefaultLimit
+	cfg.ListMaxLimit = listMaxLimit
+	cfg.ListMaxOffset = listMaxOffset
+	cfg.ListMaxResponseBytes = listMaxResponseBytes
+
 	port := getEnv("PORT", "")
 	if port == "" {
 		port = getEnv("HTTP_PORT", "")
@@ -213,4 +247,22 @@ func getEnvInt(key string, fallback int) int {
 		return v
 	}
 	return fallback
+}
+
+// getEnvListBound reads a POST /listMessages pagination bound: a positive
+// integer, or -1 meaning no cap, mirroring the TS reference server's resource
+// profile knobs (LIST_MAX_LIMIT, LIST_MAX_OFFSET and LIST_MAX_RESPONSE_BYTES
+// all accept -1 there). Anything else is a startup error rather than a
+// silently-applied fallback: a typo here would otherwise silently remove the
+// limit entirely.
+func getEnvListBound(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || (v != -1 && v <= 0) {
+		return 0, fmt.Errorf("%s must be -1 or a positive integer, got %q", key, raw)
+	}
+	return v, nil
 }

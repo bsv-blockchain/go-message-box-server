@@ -46,6 +46,34 @@ type MessageStore interface {
 	AcknowledgeMessages(ctx context.Context, recipient string, messageIDs []string) (int64, error)
 }
 
+// MessagePager is an optional extension of MessageStore for backends that can
+// answer a MessagePageQuery directly, rather than the handler paging in
+// memory over ListMessages's full result. It is not part of Store: adding a
+// required method there would break every external Store implementation
+// (README's plug-in-your-own-Store contract), so POST /listMessages type-
+// asserts for this interface and falls back to correct, if less efficient,
+// in-memory pagination when a backend does not implement it.
+//
+// Both sqlstore (SQLite and PostgreSQL) and mongostore implement it.
+type MessagePager interface {
+	// PageMessages returns up to q.FetchLimit messages ordered by CreatedAt
+	// ascending, then MessageID ascending, starting at the q.Offset'th matching
+	// message (0-based) — the same order ListMessages guarantees. An unknown
+	// recipient or box, or a MessageID filter that matches nothing, returns no
+	// messages and no error, matching ListMessages.
+	//
+	// FetchLimit is ordinarily the caller's requested page size plus one:
+	// fetching one extra row lets the caller tell whether another page exists
+	// without a second round trip, and POST /listMessages's own caller always
+	// passes at least 1. An implementation must still treat FetchLimit <= 0 as
+	// "return no rows" rather than "no limit": SQL's LIMIT 0 already means
+	// that, but MongoDB's driver treats a zero SetLimit as unbounded, so a
+	// MongoDB-backed implementation must special-case it explicitly to agree
+	// with a SQL-backed one on this out-of-contract input. Offset is always
+	// zero or more.
+	PageMessages(ctx context.Context, q MessagePageQuery) ([]Message, error)
+}
+
 // PermissionStore stores per-recipient delivery permissions.
 type PermissionStore interface {
 	// SetPermission upserts on (recipient, sender, messageBox); a nil sender is the

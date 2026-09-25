@@ -29,6 +29,7 @@ func RunStoreTests(t *testing.T, newStore NewStoreFunc) {
 
 	t.Run("Lifecycle", func(t *testing.T) { testLifecycle(t, newStore) })
 	t.Run("Messages", func(t *testing.T) { testMessages(t, newStore) })
+	t.Run("MessagePager", func(t *testing.T) { testMessagePager(t, newStore) })
 	t.Run("Permissions", func(t *testing.T) { testPermissions(t, newStore) })
 	t.Run("Devices", func(t *testing.T) { testDevices(t, newStore) })
 	t.Run("Fees", func(t *testing.T) { testFees(t, newStore) })
@@ -270,6 +271,141 @@ func testMessages(t *testing.T, newStore NewStoreFunc) {
 		}
 		if got := list(t, s, bob, "inbox"); len(got) != 1 {
 			t.Errorf("bob lost his message: got %d, want 1", len(got))
+		}
+	})
+}
+
+// --- message pager -----------------------------------------------------------
+
+// page runs a MessagePager query, skipping the whole test when the store under
+// test does not implement the optional interface.
+func page(t *testing.T, s storage.Store, q storage.MessagePageQuery) []storage.Message {
+	t.Helper()
+	pager, ok := s.(storage.MessagePager)
+	if !ok {
+		t.Skip("store does not implement storage.MessagePager")
+	}
+	got, err := pager.PageMessages(context.Background(), q)
+	if err != nil {
+		t.Fatalf("PageMessages(%+v): %v", q, err)
+	}
+	return got
+}
+
+func testMessagePager(t *testing.T, newStore NewStoreFunc) {
+	// Inserted out of lexical and box order on purpose, matching
+	// testMessages/DeterministicOrder's reasoning: a backend that sorted by
+	// messageId alone, or leaked another box's or recipient's rows in, would
+	// still pass a suite that only ever inserted things already in order.
+	seed := func(t *testing.T, s storage.Store) {
+		for i, id := range []string{"m3", "m1", "m2", "m4", "m5"} {
+			if i > 0 {
+				separateWrites()
+			}
+			insert(t, s, msg(id, alice, "inbox", bob, id))
+		}
+		insert(t, s, msg("pay1", alice, "payment_inbox", bob, "p"))
+		insert(t, s, msg("b1", bob, "inbox", carol, "b"))
+	}
+	wantOrder := []string{"m3", "m1", "m2", "m4", "m5"}
+
+	t.Run("OrderAndFetchLimit", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 3})
+		if ids := messageIDs(got); !equalStrings(ids, wantOrder[:3]) {
+			t.Errorf("got %v, want %v", ids, wantOrder[:3])
+		}
+	})
+
+	t.Run("FetchLimitBeyondAvailableReturnsAll", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 100})
+		if ids := messageIDs(got); !equalStrings(ids, wantOrder) {
+			t.Errorf("got %v, want %v", ids, wantOrder)
+		}
+	})
+
+	t.Run("Offset", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", Offset: 2, FetchLimit: 2})
+		if ids := messageIDs(got); !equalStrings(ids, wantOrder[2:4]) {
+			t.Errorf("got %v, want %v", ids, wantOrder[2:4])
+		}
+	})
+
+	t.Run("OffsetPastEndIsEmpty", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", Offset: 100, FetchLimit: 10})
+		if len(got) != 0 {
+			t.Errorf("got %d messages, want 0", len(got))
+		}
+	})
+
+	t.Run("MessageIDFilterMatch", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		id := "m4"
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 10, MessageID: &id})
+		if ids := messageIDs(got); !equalStrings(ids, []string{"m4"}) {
+			t.Errorf("got %v, want [m4]", ids)
+		}
+	})
+
+	t.Run("MessageIDFilterNoMatch", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		id := "nosuch"
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 10, MessageID: &id})
+		if len(got) != 0 {
+			t.Errorf("got %d messages, want 0", len(got))
+		}
+	})
+
+	// A messageId belonging to a different recipient's or box's message must
+	// never leak across, even though messageId is unique server-wide.
+	t.Run("MessageIDFilterScopedToRecipientAndBox", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		payID := "pay1"
+		if got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 10, MessageID: &payID}); len(got) != 0 {
+			t.Errorf("payment_inbox message leaked into inbox query: %v", messageIDs(got))
+		}
+		bobID := "b1"
+		if got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "inbox", FetchLimit: 10, MessageID: &bobID}); len(got) != 0 {
+			t.Errorf("bob's message leaked into alice's query: %v", messageIDs(got))
+		}
+	})
+
+	t.Run("UnknownBoxAndRecipient", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		if got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "nosuchbox", FetchLimit: 10}); len(got) != 0 {
+			t.Errorf("unknown box returned %d messages, want 0", len(got))
+		}
+		if got := page(t, s, storage.MessagePageQuery{Recipient: "02nobody", MessageBox: "inbox", FetchLimit: 10}); len(got) != 0 {
+			t.Errorf("unknown recipient returned %d messages, want 0", len(got))
+		}
+	})
+
+	t.Run("BoxIsolation", func(t *testing.T) {
+		s := newStore(t)
+		seed(t, s)
+
+		got := page(t, s, storage.MessagePageQuery{Recipient: alice, MessageBox: "payment_inbox", FetchLimit: 10})
+		if ids := messageIDs(got); !equalStrings(ids, []string{"pay1"}) {
+			t.Errorf("got %v, want [pay1]", ids)
 		}
 	})
 }
