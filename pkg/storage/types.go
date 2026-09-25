@@ -24,6 +24,16 @@ type Message struct {
 	UpdatedAt time.Time
 }
 
+// MessagePageQuery selects a single bounded window of a recipient's message
+// box for POST /listMessages. See MessagePager.
+type MessagePageQuery struct {
+	Recipient  string
+	MessageBox string
+	Offset     int
+	FetchLimit int
+	MessageID  *string // nil means no filter
+}
+
 // Permission is a delivery permission. A nil Sender is the box-wide default.
 // RecipientFee is FeeBlocked to block, 0 to allow, or the satoshis required.
 type Permission struct {

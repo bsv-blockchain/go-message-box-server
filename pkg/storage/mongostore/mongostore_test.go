@@ -63,6 +63,45 @@ func TestHandleConformance_Mongo(t *testing.T) {
 	})
 }
 
+// TestPageMessages_FetchLimitLessThanOne pins storage.MessagePager's
+// documented contract for out-of-range FetchLimit: the MongoDB driver's
+// options.Find().SetLimit(n) treats n == 0 (and negative n) as "no limit",
+// the opposite of SQL's LIMIT 0, so PageMessages must special-case it rather
+// than let a caller that (incorrectly) passes FetchLimit <= 0 get every
+// message back instead of none.
+func TestPageMessages_FetchLimitLessThanOne(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	ctx := context.Background()
+	s := newMongo(t, uri, database)
+	const recipient = "02fetchlimit"
+	if err := s.InsertMessage(ctx, storage.NewMessage{
+		MessageID: "m1", Recipient: recipient, MessageBox: "inbox", Sender: "02sender", Body: "hi",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pager := s.(storage.MessagePager)
+	for _, fetchLimit := range []int{0, -1, -100} {
+		got, err := pager.PageMessages(ctx, storage.MessagePageQuery{
+			Recipient: recipient, MessageBox: "inbox", FetchLimit: fetchLimit,
+		})
+		if err != nil {
+			t.Fatalf("FetchLimit %d: %v", fetchLimit, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("FetchLimit %d: got %d messages, want 0", fetchLimit, len(got))
+		}
+	}
+}
+
 // TestHandleTimesTruncateToMilliseconds pins what the contract only states: a
 // BSON datetime holds milliseconds, so a finer IssuedAt would be stored as a
 // different instant than the one passed and the owner's own resubmission would

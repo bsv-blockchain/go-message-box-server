@@ -20,9 +20,25 @@ type SendMessageBody struct {
 }
 
 // ListMessagesRequest is the expected JSON body for /listMessages.
+//
+// Fields are decoded as json.RawMessage rather than their natural Go types so
+// the handler can tell a missing field apart from one sent with the wrong
+// JSON type (a number where a string belongs, for instance) and report the
+// same ERR_INVALID_* code the TS reference server would, instead of a generic
+// JSON-decode failure.
 // @Description Request to list messages from a message box
 type ListMessagesRequest struct {
-	MessageBox string `json:"messageBox"`
+	MessageBox json.RawMessage `json:"messageBox" swaggertype:"string" example:"inbox"`
+	// Limit caps the number of messages returned; defaults to the server's
+	// configured LIST_DEFAULT_LIMIT.
+	Limit json.RawMessage `json:"limit,omitempty" swaggertype:"integer" example:"100"`
+	// Offset skips this many matching messages before the returned page.
+	Offset json.RawMessage `json:"offset,omitempty" swaggertype:"integer" example:"0"`
+	// Skip is a compatibility alias for Offset; if both are given they must match.
+	Skip json.RawMessage `json:"skip,omitempty" swaggertype:"integer" example:"0"`
+	// MessageID, if given, restricts the page to the single message with this
+	// exact ID (still subject to Limit/Offset).
+	MessageID json.RawMessage `json:"messageId,omitempty" swaggertype:"string" example:"msg-123"`
 }
 
 // AcknowledgeMessageRequest is the expected JSON body for /acknowledgeMessage.

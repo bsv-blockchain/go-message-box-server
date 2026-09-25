@@ -193,6 +193,56 @@ func (s *Store) ListMessages(ctx context.Context, recipient, messageBox string) 
 	return msgs, nil
 }
 
+// PageMessages implements storage.MessagePager. The existing
+// (recipient, messageBox, createdAt, _id) index covers the equality prefix and
+// the full sort; a MessageID filter is an equality on _id, the collection's
+// globally unique key, so it narrows to at most one document however the
+// planner chooses to use it.
+func (s *Store) PageMessages(ctx context.Context, q storage.MessagePageQuery) ([]storage.Message, error) {
+	if q.FetchLimit <= 0 {
+		// The MongoDB driver's options.Find().SetLimit(n) treats n == 0 (and any
+		// negative n) as "no limit" rather than "no rows" — the opposite of SQL's
+		// LIMIT 0, which sqlstore's PageMessages relies on for the same input.
+		// MessagePager's contract only promises FetchLimit is "always at least 1"
+		// from POST /listMessages's own caller, but it is an exported extension
+		// point other code can call directly, so guard the out-of-contract input
+		// explicitly rather than let this backend alone return every row.
+		return nil, nil
+	}
+
+	filter := bson.M{"recipient": q.Recipient, "messageBox": q.MessageBox}
+	if q.MessageID != nil {
+		filter["_id"] = *q.MessageID
+	}
+
+	cur, err := s.db.Collection(messagesColl).Find(ctx, filter,
+		options.Find().
+			SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}).
+			SetSkip(int64(q.Offset)).
+			SetLimit(int64(q.FetchLimit)),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var docs []messageDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+
+	msgs := make([]storage.Message, len(docs))
+	for i, d := range docs {
+		msgs[i] = storage.Message{
+			MessageID: d.MessageID,
+			Sender:    d.Sender,
+			Body:      d.Body,
+			CreatedAt: d.CreatedAt,
+			UpdatedAt: d.UpdatedAt,
+		}
+	}
+	return msgs, nil
+}
+
 // AcknowledgeMessages implements storage.MessageStore.
 func (s *Store) AcknowledgeMessages(ctx context.Context, recipient string, messageIDs []string) (int64, error) {
 	if len(messageIDs) == 0 {
@@ -464,3 +514,6 @@ func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 
 // compile-time assertion that Store satisfies the contract.
 var _ storage.Store = (*Store)(nil)
+
+// compile-time assertion that Store also implements the optional pager.
+var _ storage.MessagePager = (*Store)(nil)

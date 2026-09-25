@@ -37,6 +37,26 @@ func New(driver, source string) (*Store, error) {
 // Close releases the connection pool.
 func (s *Store) Close() error { return s.db.Close() }
 
+// messagesOrderBy is the ORDER BY clause ListMessages and PageMessages share.
+// On PostgreSQL, messageId is ordered COLLATE "C" (byte-wise) rather than the
+// database's default locale collation: a fresh PostgreSQL database (such as
+// the official postgres:16 image, whose default locale is en_US.utf8) sorts
+// text case-insensitively-ish ('a' before 'B'), while SQLite's default BINARY
+// collation and MongoDB's default sort both order by UTF-8 byte value ('B'
+// before 'a'). Without this, two messages that tie on created_at — which
+// created_at alone cannot happen to prevent, since it is only millisecond (Mongo)
+// or wall-clock (SQL) resolution — would come back in a different order
+// depending only on which backend serves the request, breaking the documented
+// "ordered by CreatedAt ascending, then MessageID ascending" contract for
+// Postgres specifically. SQLite has no collation named "C", so this must stay
+// a query-time choice rather than a shared literal.
+func (s *Store) messagesOrderBy() string {
+	if s.driver == "postgres" {
+		return `ORDER BY created_at ASC, messageId COLLATE "C" ASC`
+	}
+	return `ORDER BY created_at ASC, messageId ASC`
+}
+
 // rebind converts ? placeholders to $1, $2, ... for postgres.
 func (s *Store) rebind(query string) string {
 	if s.driver != "postgres" {
@@ -266,3 +286,6 @@ func postgresMigrations() []string {
 
 // compile-time assertion that Store satisfies the contract.
 var _ storage.Store = (*Store)(nil)
+
+// compile-time assertion that Store also implements the optional pager.
+var _ storage.MessagePager = (*Store)(nil)

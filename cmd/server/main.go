@@ -131,6 +131,12 @@ func main() {
 	defer walletCleanup()
 
 	srv := handlers.NewServer(store, w)
+	srv.SetListMessagesConfig(handlers.ListMessagesConfig{
+		DefaultLimit:     cfg.ListDefaultLimit,
+		MaxLimit:         cfg.ListMaxLimit,
+		MaxOffset:        cfg.ListMaxOffset,
+		MaxResponseBytes: cfg.ListMaxResponseBytes,
+	})
 
 	// Build router
 	mux := http.NewServeMux()

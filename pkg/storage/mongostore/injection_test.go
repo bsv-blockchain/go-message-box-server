@@ -89,6 +89,43 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 			}
 		})
 
+		t.Run("PageMessages/"+payload, func(t *testing.T) {
+			pager, ok := s.(storage.MessagePager)
+			if !ok {
+				t.Fatal("mongostore.Store must implement storage.MessagePager")
+			}
+			// As the messageId filter (mongostore.go's filter["_id"]).
+			got, err := pager.PageMessages(ctx, storage.MessagePageQuery{
+				Recipient: realRecipient, MessageBox: "inbox", FetchLimit: 10, MessageID: &payload,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Errorf("payload as messageId matched %d messages, want 0", len(got))
+			}
+			// As messageBox.
+			got, err = pager.PageMessages(ctx, storage.MessagePageQuery{
+				Recipient: realRecipient, MessageBox: payload, FetchLimit: 10,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Errorf("payload as messageBox matched %d messages, want 0", len(got))
+			}
+			// As recipient.
+			got, err = pager.PageMessages(ctx, storage.MessagePageQuery{
+				Recipient: payload, MessageBox: "inbox", FetchLimit: 10,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Errorf("payload as recipient matched %d messages, want 0", len(got))
+			}
+		})
+
 		t.Run("GetPermission/"+payload, func(t *testing.T) {
 			p, err := s.GetPermission(ctx, payload, nil, "inbox")
 			if err != nil {

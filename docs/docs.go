@@ -350,7 +350,7 @@ const docTemplate = `{
                         "BSVAuth": []
                     }
                 ],
-                "description": "Returns all stored messages for the specified messageBox belonging to the authenticated identity. If the box does not exist or has no messages, an empty array is returned.",
+                "description": "Returns one deterministic, bounded page of stored messages for the specified messageBox belonging to the authenticated identity, most recently paginated with limit/offset (skip is a compatibility alias for offset) and optionally filtered to a single messageId. If the box does not exist or has no messages, an empty page is returned. Existing clients that send only messageBox get the first page of up to the server's default limit.",
                 "consumes": [
                     "application/json"
                 ],
@@ -363,7 +363,7 @@ const docTemplate = `{
                 "summary": "Retrieve messages from a message box",
                 "parameters": [
                     {
-                        "description": "Message box to list messages from",
+                        "description": "Message box to list messages from, with optional pagination",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -387,6 +387,12 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "the oldest message in the page exceeds the configured response byte budget",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -914,20 +920,61 @@ const docTemplate = `{
             "description": "Request to list messages from a message box",
             "type": "object",
             "properties": {
+                "limit": {
+                    "description": "Limit caps the number of messages returned; defaults to the server's\nconfigured LIST_DEFAULT_LIMIT.",
+                    "type": "integer",
+                    "example": 100
+                },
                 "messageBox": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "inbox"
+                },
+                "messageId": {
+                    "description": "MessageID, if given, restricts the page to the single message with this\nexact ID (still subject to Limit/Offset).",
+                    "type": "string",
+                    "example": "msg-123"
+                },
+                "offset": {
+                    "description": "Offset skips this many matching messages before the returned page.",
+                    "type": "integer",
+                    "example": 0
+                },
+                "skip": {
+                    "description": "Skip is a compatibility alias for Offset; if both are given they must match.",
+                    "type": "integer",
+                    "example": 0
                 }
             }
         },
         "handlers.ListMessagesResponse": {
-            "description": "Response containing list of messages",
+            "description": "Response containing a page of messages plus pagination state",
             "type": "object",
             "properties": {
+                "hasMore": {
+                    "description": "HasMore reports whether at least one further matching message exists\nbeyond this page.",
+                    "type": "boolean",
+                    "example": false
+                },
+                "limit": {
+                    "description": "Limit is the page size that was applied (the request's limit, or the\nserver's configured default when none was given).",
+                    "type": "integer",
+                    "example": 1000
+                },
                 "messages": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/handlers.MessageOut"
                     }
+                },
+                "nextOffset": {
+                    "description": "NextOffset is Offset plus the number of messages actually returned; pass\nit as the next request's offset to continue paging.",
+                    "type": "integer",
+                    "example": 1000
+                },
+                "offset": {
+                    "description": "Offset is the request's offset (or skip), echoed back.",
+                    "type": "integer",
+                    "example": 0
                 },
                 "status": {
                     "type": "string",

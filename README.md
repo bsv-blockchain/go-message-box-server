@@ -85,6 +85,15 @@ The SQL backend keeps the original relational shape, including the `messageBox`
 table and its integer foreign key; MongoDB stores the box name on the message
 instead. Neither detail is visible through the interface or the HTTP API.
 
+`storage.MessagePager` is an optional extension a backend may implement to
+answer `POST /listMessages` pagination directly instead of the handler paging
+in memory over `ListMessages`'s full result. It is not part of `storage.Store`
+— adding a required method there would break any external `Store`
+implementation plugged in against this package — so the handler type-asserts
+for it and falls back to correct, if less efficient, in-memory pagination when
+a backend does not implement it. Both bundled backends (SQLite/PostgreSQL and
+MongoDB) implement it.
+
 ### Testing a backend
 
 `pkg/storage/storagetest` holds the conformance suite. SQLite runs it on every
@@ -311,3 +320,16 @@ All tests use real BRC-31 AuthFetch authentication against the running server.
 
 The optional paymail profile lookup reads six more, listed under
 [Paymail profile lookup](#paymail-profile-lookup).
+
+`POST /listMessages` pagination reads four more, all optional and matching the
+TS reference server's "standard" resource profile defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LIST_DEFAULT_LIMIT` | `1000` | Page size used when a request omits `limit` |
+| `LIST_MAX_LIMIT` | `1000` | Largest `limit` a request may ask for; `-1` means no cap |
+| `LIST_MAX_OFFSET` | `100000` | Largest `offset`/`skip` a request may ask for; `-1` means no cap |
+| `LIST_MAX_RESPONSE_BYTES` | `8388608` (8 MiB) | Response byte budget for one page's `messages` array; `-1` means no cap. A single message that alone exceeds the budget fails the request with `413 ERR_MESSAGE_RESPONSE_TOO_LARGE` rather than being silently dropped |
+
+`LIST_DEFAULT_LIMIT` must not exceed `LIST_MAX_LIMIT` (when the latter is
+capped); the process refuses to start otherwise.

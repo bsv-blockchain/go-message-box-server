@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -43,14 +45,27 @@ type Server struct {
 	// goroutine serves the request, so it is set once before serving and never
 	// reassigned, and what it closes over must be safe to read concurrently.
 	now func() time.Time
+
+	// listMessages bounds POST /listMessages pagination. It always holds a
+	// valid value: NewServer seeds it with defaultListMessagesConfig, and
+	// SetListMessagesConfig replaces it wholesale.
+	listMessages ListMessagesConfig
 }
 
 // NewServer creates instance of Server used by all handlers.
 func NewServer(store storage.Store, wallet sdk.Interface) *Server {
 	return &Server{
-		Store:  store,
-		wallet: wallet,
+		Store:        store,
+		wallet:       wallet,
+		listMessages: defaultListMessagesConfig(),
 	}
+}
+
+// SetListMessagesConfig replaces the POST /listMessages pagination bounds.
+// Callers normally derive c from *config.Config once at startup; tests that
+// want the TS-matching defaults can simply not call this at all.
+func (s *Server) SetListMessagesConfig(c ListMessagesConfig) {
+	s.listMessages = c
 }
 
 // timestampLayout labels times with a literal Z, so the value formatted must
@@ -69,9 +84,33 @@ func formatTime(t time.Time) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := encodeJSONNoEscape(w, v); err != nil {
 		logger.Error("failed to write JSON response", "error", err)
 	}
+}
+
+// encodeJSONNoEscape writes v as JSON to w without HTML-escaping '<', '>' and
+// '&' the way encoding/json does by default. JS's JSON.stringify — which the
+// TS reference server uses both to size its response-byte budget
+// (listMessages.ts's appendMessage) and to write the actual response body —
+// never escapes those characters, so every caller that must match TS's byte
+// counts or wire bytes (readMessagePage's per-item accounting, and this
+// function's own response body) needs this instead of json.Marshal/Encode.
+func encodeJSONNoEscape(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
+
+// marshalJSONNoEscape is encodeJSONNoEscape for callers that need the encoded
+// bytes rather than a stream, with the trailing newline json.Encoder.Encode
+// appends removed so the byte count matches JSON.stringify's output exactly.
+func marshalJSONNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeJSONNoEscape(&buf, v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // writeError writes a JSON error response.
