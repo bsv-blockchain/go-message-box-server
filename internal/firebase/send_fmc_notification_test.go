@@ -87,8 +87,8 @@ func TestBuildMessage(t *testing.T) {
 		if msg.Notification.Title != payload.Title {
 			t.Errorf("Notification.Title = %q, expected %q", msg.Notification.Title, payload.Title)
 		}
-		if msg.Notification.Body != payload.MessageID {
-			t.Errorf("Notification.Body = %q, expected %q", msg.Notification.Body, payload.MessageID)
+		if msg.Notification.Body != notificationBody {
+			t.Errorf("Notification.Body = %q, expected %q", msg.Notification.Body, notificationBody)
 		}
 	})
 
@@ -256,5 +256,20 @@ func TestSendFCMNotificationResult(t *testing.T) {
 	}
 	if failResult.Error != "some error" {
 		t.Errorf("Error = %q, expected %q", failResult.Error, "some error")
+	}
+}
+
+func TestBuildMessage_BodyNeverCarriesMessageID(t *testing.T) {
+	msg := buildMessage("token", FCMPayload{Title: "Payment received", MessageID: "msg-secret-id"})
+
+	if msg.Notification.Body != notificationBody {
+		t.Errorf("Notification.Body = %q, expected %q", msg.Notification.Body, notificationBody)
+	}
+	alert := msg.APNS.Payload.Aps.Alert
+	if alert.Title != "Payment received" || alert.Body != notificationBody {
+		t.Errorf("APNS alert = (%q, %q), expected (%q, %q)", alert.Title, alert.Body, "Payment received", notificationBody)
+	}
+	if msg.Android.Data["messageId"] != "msg-secret-id" {
+		t.Errorf("messageId should still travel in the data payload")
 	}
 }

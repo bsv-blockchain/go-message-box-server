@@ -278,17 +278,17 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if shouldUseFCMDelivery(boxType) {
+		if title, push := pushTitle(boxType); push {
 			// Detached from the request for the same reason as the write above.
 			// SendFCMNotification bounds every call it makes, so this carries no
 			// overall deadline: a shared budget would starve the tail of a long
 			// device list.
-			go func(recipient, messageID string) {
+			go func(recipient, messageID, title string) {
 				firebase.SendFCMNotification(writeCtx, s.Store, recipient, firebase.FCMPayload{
-					Title:     "New Message",
+					Title:     title,
 					MessageID: messageID,
 				})
-			}(fr.recipient, msgID)
+			}(fr.recipient, msgID, title)
 		}
 
 		results = append(results, SendMessageResult{Recipient: fr.recipient, MessageID: msgID})
