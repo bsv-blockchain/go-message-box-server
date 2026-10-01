@@ -254,13 +254,21 @@ func TestRegisterDevice_BackfillsLegacyID(t *testing.T) {
 // storedDevice is a device document as it is on disk, for the assertions that
 // have to see the fields the storage contract hides.
 type storedDevice struct {
-	ID             string `bson:"_id"`
+	// ID is the _id as stored: a string for a document of the previous
+	// release, the token itself, and an ObjectID for one written since.
+	ID             any    `bson:"_id"`
 	IdentityKey    string `bson:"identityKey"`
 	FCMToken       string `bson:"fcmToken"`
 	Active         bool   `bson:"active"`
 	RegistrationID int64  `bson:"registrationId"`
 }
 
+// pairKey names a registration, which is what a test can know of a document
+// whose _id the store chose.
+func pairKey(identityKey, fcmToken string) string { return identityKey + "|" + fcmToken }
+
+// storedDevices returns the device documents keyed by pairKey. Call it only
+// once every document has an fcmToken, which a boot of EnsureSchema gives them.
 func storedDevices(t *testing.T, s *Store) map[string]storedDevice {
 	t.Helper()
 	ctx := context.Background()
@@ -274,7 +282,11 @@ func storedDevices(t *testing.T, s *Store) map[string]storedDevice {
 	}
 	out := map[string]storedDevice{}
 	for _, d := range docs {
-		out[d.ID] = d
+		key := pairKey(d.IdentityKey, d.FCMToken)
+		if _, dup := out[key]; dup {
+			t.Errorf("more than one document for %s", key)
+		}
+		out[key] = d
 	}
 	return out
 }
@@ -333,12 +345,12 @@ func TestEnsureSchema_MigratesLegacyDevices(t *testing.T) {
 	}
 	for _, want := range legacy {
 		id := want["_id"].(string)
-		got, ok := docs[id]
+		got, ok := docs[pairKey(want["identityKey"].(string), id)]
 		if !ok {
-			t.Fatalf("document %s lost; have %+v", id, docs)
+			t.Fatalf("document %s lost, or not given its fcmToken; have %+v", id, docs)
 		}
-		if got.FCMToken != id {
-			t.Errorf("%s fcmToken = %q, want %q backfilled from the _id", id, got.FCMToken, id)
+		if got.ID != id {
+			t.Errorf("%s _id = %v, want it kept", id, got.ID)
 		}
 		if got.IdentityKey != want["identityKey"] || got.Active != want["active"] {
 			t.Errorf("%s = %+v, want identity and active flag kept", id, got)
@@ -379,7 +391,7 @@ func TestEnsureSchema_MigratesLegacyDevices(t *testing.T) {
 	}
 
 	// Now a second identity can hold a legacy token. It gets a document of its
-	// own with a compound _id, and the legacy document is untouched.
+	// own, keyed by an ObjectID, and the legacy document is untouched.
 	bobID, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-a1"})
 	if err != nil {
 		t.Fatalf("bob registers alice's legacy token: %v", err)
@@ -388,12 +400,15 @@ func TestEnsureSchema_MigratesLegacyDevices(t *testing.T) {
 		t.Errorf("bob's registration reused alice's id 7")
 	}
 	docs = storedDevices(t, s)
-	compound, ok := docs[bob+"|tok-a1"]
-	if !ok || compound.IdentityKey != bob || compound.FCMToken != "tok-a1" || compound.RegistrationID != bobID {
-		t.Errorf("bob's document = %+v (present %v), want _id %q with his key, the token and id %d; have %+v", compound, ok, bob+"|tok-a1", bobID, docs)
+	own, ok := docs[pairKey(bob, "tok-a1")]
+	if !ok || own.RegistrationID != bobID {
+		t.Errorf("bob's document = %+v (present %v), want one for the token with id %d; have %+v", own, ok, bobID, docs)
 	}
-	if docs["tok-a1"].IdentityKey != alice {
-		t.Errorf("alice's legacy document = %+v, want it still hers", docs["tok-a1"])
+	if _, isObjectID := own.ID.(bson.ObjectID); !isObjectID {
+		t.Errorf("bob's document _id = %#v, want an ObjectID", own.ID)
+	}
+	if legacyDoc := docs[pairKey(alice, "tok-a1")]; legacyDoc.ID != "tok-a1" {
+		t.Errorf("alice's legacy document = %+v, want it still hers and keyed by the token", legacyDoc)
 	}
 
 	// Token-keyed writes reach both the legacy document and the new one.
@@ -417,10 +432,10 @@ func TestEnsureSchema_MigratesLegacyDevices(t *testing.T) {
 		t.Fatal(err)
 	}
 	docs = storedDevices(t, s)
-	if _, ok := docs["tok-a1"]; ok {
+	if _, ok := docs[pairKey(alice, "tok-a1")]; ok {
 		t.Error("alice's legacy tok-a1 document survived UnregisterDevice")
 	}
-	if _, ok := docs[bob+"|tok-a1"]; !ok {
+	if _, ok := docs[pairKey(bob, "tok-a1")]; !ok {
 		t.Error("bob's tok-a1 document was removed by alice's UnregisterDevice")
 	}
 
@@ -481,9 +496,10 @@ func TestEnsureSchema_ToleratesLegacyWritesAfterMigration(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
-	for id, doc := range storedDevices(t, s) {
-		if doc.FCMToken != id {
-			t.Errorf("%s fcmToken = %q after the next boot, want %q", id, doc.FCMToken, id)
+	docs := storedDevices(t, s)
+	for _, token := range []string{"old-tok-1", "old-tok-2"} {
+		if got, ok := docs[pairKey(alice, token)]; !ok || got.ID != token {
+			t.Errorf("%s = %+v (present %v) after the next boot, want it kept and given its fcmToken", token, got, ok)
 		}
 	}
 }
@@ -529,19 +545,190 @@ func TestEnsureSchema_ResolvesLegacyDuplicateOfARegisteredPair(t *testing.T) {
 		t.Fatalf("EnsureSchema with a colliding legacy document: %v", err)
 	}
 
+	// storedDevices fails the test on a second document for one pair.
 	docs := storedDevices(t, s)
-	if _, ok := docs["dup-tok"]; ok {
-		t.Error("the legacy duplicate of a registered pair survived, want the registration kept as the one document")
+	if got, ok := docs[pairKey(alice, "dup-tok")]; !ok || got.ID == "dup-tok" {
+		t.Errorf("registered pair = %+v (present %v), want the registration made through this release kept, not the legacy duplicate", got, ok)
 	}
-	if got, ok := docs[alice+"|dup-tok"]; !ok || got.FCMToken != "dup-tok" {
-		t.Errorf("registered pair = %+v (present %v), want it kept", got, ok)
-	}
-	for _, id := range []string{"solo-tok", "bob-tok"} {
-		if got, ok := docs[id]; !ok || got.FCMToken != id {
-			t.Errorf("%s = %+v (present %v), want it kept and backfilled", id, got, ok)
+	for _, c := range []struct{ identity, token string }{{alice, "solo-tok"}, {bob, "bob-tok"}} {
+		if got, ok := docs[pairKey(c.identity, c.token)]; !ok || got.ID != c.token {
+			t.Errorf("%s = %+v (present %v), want it kept and backfilled", c.token, got, ok)
 		}
 	}
 	if devices, err := s.ListDevices(ctx, alice); err != nil || len(devices) != 2 {
 		t.Errorf("alice's devices = %+v, %v; want two (dup-tok once, solo-tok)", devices, err)
 	}
+}
+
+// The previous release reads a device document's _id as the FCM token: it lists
+// an identity's devices into a struct keyed on _id, sends to each, and when FCM
+// calls a token invalid it deactivates the document whose _id is that string.
+// A rolling deploy leaves such replicas serving next to this release, and the
+// wallet does not register a pair again once it has (its marker says it is),
+// so a document those replicas deactivate stays deactivated. A new document's
+// _id must therefore be something no string they derive can match.
+func TestRegisterDevice_PreviousReleaseCannotDeactivateIt(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	ctx := context.Background()
+	s := newMongoBare(t, uri, database)
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const alice, bob, token = "02alice", "02bob", "shared-tok"
+	for _, who := range []string{alice, bob} {
+		if _, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: who, FCMToken: token}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	coll := s.db.Collection(devicesColl)
+
+	for _, who := range []string{alice, bob} {
+		raw, err := coll.FindOne(ctx, bson.M{"identityKey": who}).Raw()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := raw.Lookup("_id").Type; got != bson.TypeObjectID {
+			t.Errorf("%s's document _id has BSON type %v, want an ObjectID, which is not a string", who, got)
+		}
+	}
+
+	// What a replica of the previous release does. Whether its listing decodes
+	// an ObjectID _id as a token or refuses it, every key it could end up
+	// deactivating by has to miss.
+	deactivated := 0
+	deactivate := func(key string) {
+		res, err := coll.UpdateOne(ctx,
+			bson.M{"_id": key},
+			bson.M{"$set": bson.M{"active": false, "updatedAt": now()}},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deactivated += int(res.ModifiedCount)
+	}
+	for _, who := range []string{alice, bob} {
+		var listed []struct {
+			Token string `bson:"_id"`
+		}
+		cur, err := coll.Find(ctx, bson.M{"identityKey": who, "active": true})
+		if err == nil {
+			err = cur.All(ctx, &listed)
+		}
+		t.Logf("previous release lists %s's devices: %d tokens, error %v", who, len(listed), err)
+		for _, d := range listed {
+			deactivate(d.Token)
+		}
+		// The key this release used to give a document, and the bare token.
+		deactivate(who + "|" + token)
+		deactivate(token)
+	}
+	if deactivated != 0 {
+		t.Errorf("the previous release's token-keyed write reached %d documents, want none", deactivated)
+	}
+
+	for _, who := range []string{alice, bob} {
+		active, err := s.ListActiveDevices(ctx, who)
+		if err != nil || len(active) != 1 || active[0].FCMToken != token {
+			t.Errorf("%s's active devices = %+v, %v; want the registration intact", who, active, err)
+		}
+	}
+}
+
+// A replica of the previous release that registers a pair this release already
+// holds writes a second document for it, keyed by the bare token and without an
+// fcmToken, and it stays until the next boot's backfill drops it. Until then it
+// must not double the push, a token FCM reports dead must not stay active on it,
+// and unregistering the pair must not leave it pushing.
+func TestDevices_OldReplicaTwinOfARegisteredPair(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	const alice, bob, token = "02alice", "02bob", "twin-tok"
+
+	// twinned returns a store where alice holds the token through this release
+	// and again through an old replica, and bob holds it through this release.
+	twinned := func(t *testing.T) (*Store, int64) {
+		t.Helper()
+		ctx := context.Background()
+		s := newMongoBare(t, uri, database)
+		if err := s.EnsureSchema(ctx); err != nil {
+			t.Fatal(err)
+		}
+		id, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: bob, FCMToken: token}); err != nil {
+			t.Fatal(err)
+		}
+		ts := now().Add(time.Minute)
+		if _, err := s.db.Collection(devicesColl).InsertOne(ctx, bson.M{
+			"_id": token, "identityKey": alice, "deviceId": nil, "platform": nil,
+			"active": true, "createdAt": ts, "updatedAt": ts, "lastUsed": ts,
+		}); err != nil {
+			t.Fatalf("old replica's insert: %v", err)
+		}
+		return s, id
+	}
+	active := func(t *testing.T, s *Store, who string) int64 {
+		t.Helper()
+		n, err := s.db.Collection(devicesColl).CountDocuments(context.Background(), bson.M{"identityKey": who, "active": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("ListedOnce", func(t *testing.T) {
+		ctx := context.Background()
+		s, id := twinned(t)
+		got, err := s.ListActiveDevices(ctx, alice)
+		if err != nil || len(got) != 1 || got[0].ID != id {
+			t.Errorf("active devices = %+v, %v; want the registration once, with id %d", got, err, id)
+		}
+		got, err = s.ListDevices(ctx, alice)
+		if err != nil || len(got) != 1 || got[0].ID != id {
+			t.Errorf("devices = %+v, %v; want the registration once, with id %d", got, err, id)
+		}
+	})
+
+	t.Run("DeactivatedWithTheToken", func(t *testing.T) {
+		s, _ := twinned(t)
+		if err := s.DeactivateDevice(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		for _, who := range []string{alice, bob} {
+			if n := active(t, s, who); n != 0 {
+				t.Errorf("%s has %d documents active after the token was deactivated, want none", who, n)
+			}
+		}
+	})
+
+	t.Run("RemovedWithTheRegistration", func(t *testing.T) {
+		s, _ := twinned(t)
+		if err := s.UnregisterDevice(context.Background(), alice, token); err != nil {
+			t.Fatal(err)
+		}
+		if n := active(t, s, alice); n != 0 {
+			t.Errorf("alice has %d documents active after unregistering, want none", n)
+		}
+		if n := active(t, s, bob); n != 1 {
+			t.Errorf("bob has %d documents active after alice unregistered, want his one", n)
+		}
+	})
 }

@@ -440,10 +440,18 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 
 type deviceDoc struct {
 	// DocID is the document key. A document written by the previous release
-	// keys on the token alone and keeps that key for life; one written since
-	// keys on deviceDocID, because the same token now belongs to one document
-	// per identity.
-	DocID string `bson:"_id"`
+	// keys on the token alone, as a string, and keeps that key for life. One
+	// written since keys on an ObjectID the server assigns, because the same
+	// token now belongs to one document per identity.
+	//
+	// It must not be a string. The previous release reads the key as the FCM
+	// token: it sends to it, and when FCM rejects it deactivates the document
+	// with that _id. While its replicas still serve during a rolling deploy, a
+	// string key is a registration they deactivate for good, since the wallet
+	// does not register a pair again once it has. The driver does not decode an
+	// ObjectID into their string key, so their listing for that identity fails
+	// and they send it nothing, and a write keyed on a string never matches one.
+	DocID any `bson:"_id"`
 	// FCMToken is the token proper. Documents of the previous release lack it
 	// until EnsureSchema backfills it from the key.
 	FCMToken    string     `bson:"fcmToken"`
@@ -468,19 +476,19 @@ func (d deviceDoc) token() string {
 	if d.FCMToken != "" {
 		return d.FCMToken
 	}
-	return d.DocID
+	key, _ := d.DocID.(string)
+	return key
 }
 
-// deviceDocID is the key of a new registration. An identity key is a fixed-width
-// hex string and never contains the separator, so the pair maps to the key one
-// to one.
-//
-// The previous release reads the key as the token. While its replicas still
-// serve, one that delivers to a recipient holding a document with this key sends
-// to a token FCM rejects, then deactivates that document. Replace replicas
-// rather than overlapping them; see the README's upgrade notes.
-func deviceDocID(identityKey, fcmToken string) string {
-	return identityKey + "|" + fcmToken
+// byToken matches every document of a token: those holding it as fcmToken, and
+// those a replica of the previous release wrote mid-deploy, which are keyed by
+// the token and lack the field until the next boot backfills it. A key that is
+// not a string, as a new document's is not, never matches the second branch.
+func byToken(fcmToken string) bson.M {
+	return bson.M{"$or": bson.A{
+		bson.M{"fcmToken": fcmToken},
+		bson.M{"_id": fcmToken},
+	}}
 }
 
 // backfillDeviceTokens gives every document of the previous release its fcmToken,
@@ -571,9 +579,9 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 			"updatedAt": ts,
 			"lastUsed":  ts,
 		},
-		// identityKey and fcmToken come from the filter on insert.
+		// identityKey and fcmToken come from the filter on insert, and the server
+		// assigns the ObjectID _id that deviceDoc.DocID explains.
 		"$setOnInsert": bson.M{
-			"_id":            deviceDocID(d.IdentityKey, d.FCMToken),
 			"createdAt":      ts,
 			"registrationId": seq,
 		},
@@ -581,8 +589,9 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 
 	var doc deviceDoc
 	// Two first registrations of one pair can race to insert, and the loser
-	// fails with a duplicate key on _id, which the server does not retry for the
-	// caller. The document exists by then, so one retry is a plain update.
+	// fails with a duplicate key on the pair's unique index, which the server
+	// does not retry for the caller. The document exists by then, so one retry
+	// is a plain update.
 	for attempt := 0; ; attempt++ {
 		err = coll.FindOneAndUpdate(ctx, byPair, update,
 			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After).SetProjection(idOnly),
@@ -633,8 +642,22 @@ func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly 
 		return nil, err
 	}
 
+	// A replica of the previous release that registers a pair this release
+	// already holds writes a second document for it, keyed by the bare token and
+	// without fcmToken, which the next boot's backfill drops. Until then it is
+	// the same registration twice, and a push to it would go out twice.
+	registered := map[string]bool{}
+	for _, d := range docs {
+		if d.FCMToken != "" {
+			registered[d.FCMToken] = true
+		}
+	}
+
 	var devices []storage.Device
 	for _, d := range docs {
+		if d.FCMToken == "" && registered[d.token()] {
+			continue
+		}
 		devices = append(devices, storage.Device{
 			ID:          d.ID,
 			IdentityKey: d.IdentityKey,
@@ -665,7 +688,7 @@ func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]st
 func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
 	ts := now()
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
-		bson.M{"fcmToken": fcmToken},
+		byToken(fcmToken),
 		bson.M{"$set": bson.M{"lastUsed": ts, "updatedAt": ts}},
 	)
 	return err
@@ -676,18 +699,20 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 // dead, not one identity's use of it.
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
-		bson.M{"fcmToken": fcmToken},
+		byToken(fcmToken),
 		bson.M{"$set": bson.M{"active": false, "updatedAt": now()}},
 	)
 	return err
 }
 
-// UnregisterDevice implements storage.DeviceStore. Both fields are in the
-// filter: the token alone would delete every identity's document for it.
+// UnregisterDevice implements storage.DeviceStore. The identity is in the
+// filter: the token alone would delete every identity's document for it. The
+// token matches as byToken does, so a document an old replica wrote for the
+// pair mid-deploy goes with the registration instead of pushing on.
 func (s *Store) UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error {
-	_, err := s.db.Collection(devicesColl).DeleteMany(ctx,
-		bson.M{"identityKey": identityKey, "fcmToken": fcmToken},
-	)
+	filter := byToken(fcmToken)
+	filter["identityKey"] = identityKey
+	_, err := s.db.Collection(devicesColl).DeleteMany(ctx, filter)
 	return err
 }
 

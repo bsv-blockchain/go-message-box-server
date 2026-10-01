@@ -106,10 +106,15 @@ Replace replicas rather than running old and new side by side. Replicas still on
 the previous release cannot register devices on PostgreSQL (their
 `ON CONFLICT (fcm_token)` has no key left) until they are replaced. On MongoDB a
 document an old replica writes in that window is picked up by the next boot's
-backfill, and a registration of a new (identity, token) pair is keyed
-`identityKey|token`, which an old replica reads as the token: delivering to it
-fails at FCM and the old replica then deactivates the registration, until the
-wallet registers it again.
+backfill; until then it is the same registration twice, and this release lists
+and unregisters the pair once. A registration made through this release is keyed
+by an ObjectID rather than by the token, which an old replica cannot read as a
+token: it fails to list that identity's devices, so it sends that identity no
+push and answers its `GET /devices` with an error until it is replaced, but it
+never deactivates or changes the registration, and nothing needs re-registering
+afterwards. Rolling back to the previous release has the same effect for every
+identity that registered since the upgrade: it can neither list nor push to them,
+and nothing is deactivated or lost, so rolling forward restores delivery.
 
 The SQL backend keeps the original relational shape, including the `messageBox`
 table and its integer foreign key; MongoDB stores the box name on the message
