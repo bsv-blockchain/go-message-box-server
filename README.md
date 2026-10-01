@@ -235,7 +235,7 @@ Uses `go-wallet-toolbox` with local SQLite storage for production wallet functio
 - Identity key derivation from `SERVER_PRIVATE_KEY`
 - Automatic storage migration on startup
 
-Network is configurable via `BSV_NETWORK` (mainnet/testnet).
+Network is configurable via `BSV_NETWORK` (mainnet/testnet/ttn/tstn).
 
 ## Differences from the Original
 
@@ -315,7 +315,7 @@ All tests use real BRC-31 AuthFetch authentication against the running server.
 | `DB_SOURCE` | `messagebox.db` | SQL connection string or file path |
 | `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection URI |
 | `MONGO_DATABASE` | `messagebox` | MongoDB database name |
-| `BSV_NETWORK` | `mainnet` | BSV network (`mainnet`, `testnet`) |
+| `BSV_NETWORK` | `mainnet` | BSV network (`mainnet`, `testnet`, `ttn`, `tstn`); an unknown value fails startup |
 | `ENABLE_WEBSOCKETS` | `true` | Enable WebSocket support (not yet implemented) |
 
 The optional paymail profile lookup reads six more, listed under
