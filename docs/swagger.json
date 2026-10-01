@@ -650,7 +650,7 @@
                         "BSVAuth": []
                     }
                 ],
-                "description": "Registers a device with an FCM token for receiving push notifications. Supports iOS, Android, and web platforms.",
+                "description": "Registers a device with an FCM token for receiving push notifications. Supports iOS, Android, and web platforms. A registration belongs to the authenticated identity and the token together: several identities can register the same token (a wallet with several profiles on one install), and each is pushed to separately. Registering again is idempotent and returns the same deviceId.",
                 "consumes": [
                     "application/json"
                 ],
@@ -752,6 +752,63 @@
                         "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/handlers.DeliveryBlockedError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/unregisterDevice": {
+            "post": {
+                "security": [
+                    {
+                        "BSVAuth": []
+                    }
+                ],
+                "description": "Removes the authenticated identity's registration of an FCM token, and only that one: other identities that registered the same token keep theirs. Idempotent: it succeeds whether or not the identity had registered the token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Devices"
+                ],
+                "summary": "Unregister a device from push notifications",
+                "parameters": [
+                    {
+                        "description": "Token to unregister",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UnregisterDeviceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UnregisterDeviceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
@@ -1293,6 +1350,29 @@
             "description": "Simple success response",
             "type": "object",
             "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "success"
+                }
+            }
+        },
+        "handlers.UnregisterDeviceRequest": {
+            "description": "Request to remove the caller's registration of an FCM token",
+            "type": "object",
+            "properties": {
+                "fcmToken": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UnregisterDeviceResponse": {
+            "description": "Response after unregistering a device",
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "example": "Device unregistered from push notifications"
+                },
                 "status": {
                     "type": "string",
                     "example": "success"

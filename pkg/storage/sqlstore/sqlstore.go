@@ -115,6 +115,12 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	case "postgres":
 		migrations = postgresMigrations()
 	default:
+		// SQLite cannot drop a column's inline UNIQUE, so the old device table
+		// is rebuilt in Go. It runs first: the table may not exist yet, and the
+		// statements below create the indexes the rebuild drops with it.
+		if err := s.rebuildSQLiteDevicesTable(ctx); err != nil {
+			return err
+		}
 		migrations = sqliteMigrations()
 	}
 
@@ -150,7 +156,88 @@ func commonMigrations() []string {
 		`CREATE INDEX IF NOT EXISTS idx_message_permissions_sender ON message_permissions(sender)`,
 		`CREATE INDEX IF NOT EXISTS idx_device_registrations_identity ON device_registrations(identity_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_device_registrations_identity_active ON device_registrations(identity_key, active)`,
+		// A registration is one identity's hold on one token. The same token is
+		// held by several identities when one install runs several wallet
+		// profiles, so the token alone cannot be unique.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_device_registrations_identity_token ON device_registrations(identity_key, fcm_token)`,
+		// DeactivateDevice and UpdateDeviceLastUsed look a token up on its own,
+		// on every push. The unique index above leads with identity_key, so it
+		// cannot serve that.
+		`CREATE INDEX IF NOT EXISTS idx_device_registrations_token ON device_registrations(fcm_token)`,
 	}
+}
+
+// sqliteDevicesTable is the device table DDL. It takes the table name so the
+// rebuild below can create its replacement from the same text. The only key is
+// the primary key: uniqueness on (identity_key, fcm_token) is an index in
+// commonMigrations.
+func sqliteDevicesTable(name string) string {
+	return `CREATE TABLE IF NOT EXISTS ` + name + ` (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			identity_key TEXT NOT NULL,
+			fcm_token TEXT NOT NULL,
+			device_id TEXT,
+			platform TEXT,
+			last_used DATETIME,
+			active BOOLEAN DEFAULT TRUE
+		)`
+}
+
+// hasLegacyTokenKey reports whether device_registrations still carries a unique
+// key on fcm_token alone, which is what the schema used to have. It asks the
+// catalog rather than comparing DDL text, so it is right whatever the key is
+// called and however the table was created. A missing table has no key.
+func (s *Store) hasLegacyTokenKey(ctx context.Context) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM pragma_index_list('device_registrations') il
+		WHERE il."unique" = 1
+		  AND (SELECT COUNT(*) FROM pragma_index_info(il.name)) = 1
+		  AND (SELECT name FROM pragma_index_info(il.name)) = 'fcm_token'`,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect device_registrations keys: %w", err)
+	}
+	return n > 0, nil
+}
+
+// rebuildSQLiteDevicesTable moves an old device table, unique on fcm_token,
+// onto the current shape. It copies every row with its id, because clients keep
+// the registration id they were given, and it does the whole swap in one
+// transaction, so an interruption leaves the old table whole. It does nothing on
+// a fresh database or an already-migrated one.
+func (s *Store) rebuildSQLiteDevicesTable(ctx context.Context) error {
+	legacy, err := s.hasLegacyTokenKey(ctx)
+	if err != nil || !legacy {
+		return err
+	}
+
+	const staging = "device_registrations_rebuild"
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin device table rebuild: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS ` + staging,
+		sqliteDevicesTable(staging),
+		`INSERT INTO ` + staging + ` (id, created_at, updated_at, identity_key, fcm_token, device_id, platform, last_used, active)
+		 SELECT id, created_at, updated_at, identity_key, fcm_token, device_id, platform, last_used, active FROM device_registrations`,
+		// The old table's indexes go with it; commonMigrations recreates them.
+		`DROP TABLE device_registrations`,
+		`ALTER TABLE ` + staging + ` RENAME TO device_registrations`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("device table rebuild failed: %s: %w", stmt[:min(60, len(stmt))], err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit device table rebuild: %w", err)
+	}
+	return nil
 }
 
 // sqliteMessagesIndex builds in one go. SQLite serialises writers anyway, so
@@ -193,17 +280,7 @@ func sqliteMigrations() []string {
 			message_box TEXT NOT NULL UNIQUE,
 			delivery_fee INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS device_registrations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			identity_key TEXT NOT NULL,
-			fcm_token TEXT NOT NULL UNIQUE,
-			device_id TEXT,
-			platform TEXT,
-			last_used DATETIME,
-			active BOOLEAN DEFAULT TRUE
-		)`,
+		sqliteDevicesTable("device_registrations"),
 	}
 	return append(append(tables, sqliteMessagesIndex), commonMigrations()...)
 }
@@ -273,7 +350,7 @@ func postgresMigrations() []string {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			identity_key TEXT NOT NULL,
-			fcm_token TEXT NOT NULL UNIQUE,
+			fcm_token TEXT NOT NULL,
 			device_id TEXT,
 			platform TEXT,
 			last_used TIMESTAMP,
@@ -281,8 +358,35 @@ func postgresMigrations() []string {
 		)`,
 	}
 	migrations := append(tables, postgresMessagesIndex...)
-	return append(migrations, commonMigrations()...)
+	migrations = append(migrations, commonMigrations()...)
+	// Last, so the (identity_key, fcm_token) index from commonMigrations
+	// already guards the table when the old key goes: there is no moment with
+	// neither.
+	return append(migrations, postgresDropLegacyTokenKey)
 }
+
+// postgresDropLegacyTokenKey drops the unique constraint an old database has on
+// fcm_token alone, which would refuse a second identity's registration of the
+// token. It finds the constraint by its shape, not its generated name, and the
+// DROP is IF EXISTS so replicas booting together cannot trip over each other.
+// A database created by this release has no such constraint and this is a no-op.
+//
+// During a rolling deploy, replicas still on the old release upsert with
+// ON CONFLICT (fcm_token), which no longer has a key to infer from. Their
+// /registerDevice calls fail until they are replaced.
+const postgresDropLegacyTokenKey = `DO $$
+	DECLARE legacy text;
+	BEGIN
+	  FOR legacy IN
+	    SELECT con.conname FROM pg_constraint con
+	    JOIN pg_class rel ON rel.oid = con.conrelid
+	    JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+	    WHERE rel.relname = 'device_registrations' AND pg_table_is_visible(rel.oid)
+	      AND con.contype = 'u' AND array_length(con.conkey, 1) = 1 AND att.attname = 'fcm_token'
+	  LOOP
+	    EXECUTE format('ALTER TABLE device_registrations DROP CONSTRAINT IF EXISTS %I', legacy);
+	  END LOOP;
+	END $$`
 
 // compile-time assertion that Store satisfies the contract.
 var _ storage.Store = (*Store)(nil)

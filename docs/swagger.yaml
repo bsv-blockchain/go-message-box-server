@@ -402,6 +402,22 @@ definitions:
         example: success
         type: string
     type: object
+  handlers.UnregisterDeviceRequest:
+    description: Request to remove the caller's registration of an FCM token
+    properties:
+      fcmToken:
+        type: string
+    type: object
+  handlers.UnregisterDeviceResponse:
+    description: Response after unregistering a device
+    properties:
+      message:
+        example: Device unregistered from push notifications
+        type: string
+      status:
+        example: success
+        type: string
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -834,8 +850,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Registers a device with an FCM token for receiving push notifications.
-        Supports iOS, Android, and web platforms.
+      description: 'Registers a device with an FCM token for receiving push notifications.
+        Supports iOS, Android, and web platforms. A registration belongs to the authenticated
+        identity and the token together: several identities can register the same
+        token (a wallet with several profiles on one install), and each is pushed
+        to separately. Registering again is idempotent and returns the same deviceId.'
       parameters:
       - description: Device registration details
         in: body
@@ -909,6 +928,44 @@ paths:
       summary: Send a message to recipient(s)
       tags:
       - Messages
+  /unregisterDevice:
+    post:
+      consumes:
+      - application/json
+      description: 'Removes the authenticated identity''s registration of an FCM token,
+        and only that one: other identities that registered the same token keep theirs.
+        Idempotent: it succeeds whether or not the identity had registered the token.'
+      parameters:
+      - description: Token to unregister
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UnregisterDeviceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.UnregisterDeviceResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BSVAuth: []
+      summary: Unregister a device from push notifications
+      tags:
+      - Devices
 securityDefinitions:
   BSVAuth:
     description: BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-*

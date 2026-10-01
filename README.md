@@ -14,6 +14,7 @@ adds public, unauthenticated routes alongside them.
 | POST | `/listMessages` | List messages from a specific message box |
 | POST | `/acknowledgeMessage` | Acknowledge (delete) received messages |
 | POST | `/registerDevice` | Register device for FCM push notifications |
+| POST | `/unregisterDevice` | Remove the caller's registration of an FCM token |
 | GET | `/devices` | List registered devices |
 | POST | `/permissions/set` | Set message permission (block, allow, or require payment) |
 | GET | `/permissions/get` | Get permission for a sender/box combination |
@@ -79,11 +80,44 @@ The schema is created on startup and the data it holds is the same either way:
 - **messages** — Stored messages with sender, recipient, body
 - **message permissions** — Per-sender or box-wide fee/block settings
 - **server fees** — Server-level delivery fees per box type
-- **device registrations** — FCM tokens for push notifications
+- **device registrations** — FCM tokens for push notifications, one per
+  (identity key, token) pair
+
+A device registration belongs to the authenticated identity **and** the token
+together. A wallet with several profiles runs one FCM token for all of them and
+registers it once per profile, so one token can be registered by several
+identities at once, each pushed to separately. Registering the same pair again is
+idempotent and returns the same `deviceId`. `POST /unregisterDevice` with
+`{"fcmToken": "..."}` deletes only the caller's registration of a token and
+succeeds when there is none. FCM reporting a token dead deactivates it for every
+identity that registered it.
+
+The push `data` carries `messageId`, `originator`, `recipient` (the identity key
+the message was sent to) and `messageBox`, on both Android and APNs. Because a
+token can serve several identities, a client uses `recipient` to tell which one a
+push is for. The notification title and body are unchanged.
+
+Upgrading an existing database is automatic and keeps every registration and its
+`deviceId`. SQLite rebuilds `device_registrations` in one transaction; PostgreSQL
+replaces the `UNIQUE(fcm_token)` constraint with a unique index on
+`(identity_key, fcm_token)`; MongoDB backfills an `fcmToken` field from each
+legacy document's `_id` and builds a unique index on `(identityKey, fcmToken)`.
+Replace replicas rather than running old and new side by side. Replicas still on
+the previous release cannot register devices on PostgreSQL (their
+`ON CONFLICT (fcm_token)` has no key left) until they are replaced. On MongoDB a
+document an old replica writes in that window is picked up by the next boot's
+backfill, and a registration of a new (identity, token) pair is keyed
+`identityKey|token`, which an old replica reads as the token: delivering to it
+fails at FCM and the old replica then deactivates the registration, until the
+wallet registers it again.
 
 The SQL backend keeps the original relational shape, including the `messageBox`
 table and its integer foreign key; MongoDB stores the box name on the message
 instead. Neither detail is visible through the interface or the HTTP API.
+
+`storage.DeviceStore` gained `UnregisterDevice(ctx, identityKey, fcmToken)`, so a
+`storage.Store` implemented outside this repository has to add it; the
+conformance suite checks it.
 
 `storage.MessagePager` is an optional extension a backend may implement to
 answer `POST /listMessages` pagination directly instead of the handler paging
@@ -269,7 +303,7 @@ go test ./...
 
 ### Jest integration tests
 
-The `test-client/` directory contains 26 integration tests against a running
+The `test-client/` directory contains 30 integration tests against a running
 server: `messagebox.test.ts` drives the message lifecycle through
 `@bsv/message-box-client`, and `devices-permissions.test.ts` drives the device,
 permission and quote endpoints over `AuthFetch` directly (the client does not
@@ -295,6 +329,7 @@ npx jest --verbose
 - List messages (populated box, empty box)
 - Acknowledge messages (valid, already-acknowledged, nonexistent)
 - Register and list devices (upsert on re-registration, platform validation)
+- Two identities registering one token, and unregistering (idempotent, scoped to the caller)
 - Set, get and list permissions (box-wide vs sender-specific, order, paging, filtering)
 - Delivery quotes
 - Input validation (empty recipient, empty body)

@@ -1072,14 +1072,14 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 
 	// The ID is the registration's row identity: clients store it, and the
 	// device list reports it, so it must survive re-registration and must
-	// never be shared between tokens.
-	t.Run("IDIsStablePerToken", func(t *testing.T) {
+	// never be shared between registrations.
+	t.Run("IDIsStablePerRegistration", func(t *testing.T) {
 		s := newStore(t)
 		id1 := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
 		id2 := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-2"})
 		id3 := register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-3"})
 		if id1 == id2 || id1 == id3 || id2 == id3 {
-			t.Fatalf("ids = %d, %d, %d, want distinct per token", id1, id2, id3)
+			t.Fatalf("ids = %d, %d, %d, want distinct per registration", id1, id2, id3)
 		}
 
 		if again := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1", Platform: ptr("ios")}); again != id1 {
@@ -1107,6 +1107,196 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		}
 	})
 
+	// One install of the wallet holds several identities on a single FCM token.
+	// Each registers it, and a push for either must reach the device, so the
+	// second registration must not take the token from the first.
+	t.Run("TwoIdentitiesShareOneToken", func(t *testing.T) {
+		s := newStore(t)
+		aliceID := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1", Platform: ptr("ios")})
+		bobID := register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-1", Platform: ptr("ios")})
+		if aliceID == bobID {
+			t.Errorf("both registrations got ID %d, want one each", aliceID)
+		}
+
+		for _, id := range []struct {
+			identity string
+			want     int64
+		}{{alice, aliceID}, {bob, bobID}} {
+			got := devices(t, s, id.identity, true)
+			if len(got) != 1 {
+				t.Fatalf("%s has %d active devices, want 1", id.identity, len(got))
+			}
+			if got[0].IdentityKey != id.identity || got[0].FCMToken != "tok-1" || got[0].ID != id.want {
+				t.Errorf("%s device = %+v, want token tok-1 with ID %d", id.identity, got[0], id.want)
+			}
+		}
+
+		// Re-registering either pair is idempotent and leaves the other alone.
+		separateWrites()
+		if again := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1", DeviceID: ptr("dev-a")}); again != aliceID {
+			t.Errorf("alice re-register id = %d, want %d", again, aliceID)
+		}
+		if again := register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-1"}); again != bobID {
+			t.Errorf("bob re-register id = %d, want %d", again, bobID)
+		}
+		if got := devices(t, s, alice, false); len(got) != 1 || got[0].DeviceID == nil || *got[0].DeviceID != "dev-a" {
+			t.Errorf("alice devices = %+v, want one with deviceId dev-a", got)
+		}
+		if got := devices(t, s, bob, false); len(got) != 1 || got[0].DeviceID != nil {
+			t.Errorf("bob devices = %+v, want one with no deviceId (alice's write must not reach it)", got)
+		}
+	})
+
+	// The token is what FCM reports on and what the server stamps when it
+	// delivers, so those two act on every registration of it.
+	t.Run("TokenKeyedWritesApplyToEveryRegistration", func(t *testing.T) {
+		s := newStore(t)
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-1"})
+		register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-2"})
+		// Capture each tok-1 registration's UpdatedAt. A backend that let bob's
+		// registration take the token leaves alice with none, so check before
+		// indexing rather than panic.
+		before := map[string]time.Time{}
+		for _, who := range []string{alice, bob} {
+			for _, d := range devices(t, s, who, false) {
+				if d.FCMToken == "tok-1" {
+					before[who] = d.UpdatedAt
+				}
+			}
+			if _, ok := before[who]; !ok {
+				t.Fatalf("%s has no tok-1 registration, want one each", who)
+			}
+		}
+
+		separateWrites()
+		if err := s.UpdateDeviceLastUsed(ctx, "tok-1"); err != nil {
+			t.Fatalf("UpdateDeviceLastUsed: %v", err)
+		}
+		for _, who := range []string{alice, bob} {
+			for _, d := range devices(t, s, who, false) {
+				if d.FCMToken != "tok-1" {
+					continue
+				}
+				if !d.UpdatedAt.After(before[who]) {
+					t.Errorf("%s tok-1 UpdatedAt = %v, want it after %v: last-used must reach every registration", who, d.UpdatedAt, before[who])
+				}
+			}
+		}
+
+		if err := s.DeactivateDevice(ctx, "tok-1"); err != nil {
+			t.Fatalf("DeactivateDevice: %v", err)
+		}
+		if got := devices(t, s, alice, true); len(got) != 0 {
+			t.Errorf("alice has %d active devices after the token died, want 0", len(got))
+		}
+		got := devices(t, s, bob, true)
+		if len(got) != 1 || got[0].FCMToken != "tok-2" {
+			t.Errorf("bob active devices = %+v, want only tok-2 (tok-1 died for both identities)", got)
+		}
+		if all := devices(t, s, alice, false); len(all) != 1 || all[0].Active {
+			t.Errorf("alice devices = %+v, want her tok-1 registration kept but inactive", all)
+		}
+
+		// Either identity re-registering revives only its own row.
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		if got := devices(t, s, alice, true); len(got) != 1 {
+			t.Errorf("alice active = %d after re-register, want 1", len(got))
+		}
+		if got := devices(t, s, bob, true); len(got) != 1 || got[0].FCMToken != "tok-2" {
+			t.Errorf("bob active = %+v, want alice's re-register to leave his tok-1 inactive", got)
+		}
+	})
+
+	// UnregisterDevice removes the caller's registration and nothing else. The
+	// wallet calls it when a profile is removed, while the other profiles keep
+	// receiving pushes on the same token.
+	t.Run("UnregisterIsScopedToTheCaller", func(t *testing.T) {
+		s := newStore(t)
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-2"})
+		bobID := register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-1"})
+		if got := devices(t, s, alice, true); len(got) != 2 {
+			t.Fatalf("alice has %d active devices before unregistering, want 2", len(got))
+		}
+
+		if err := s.UnregisterDevice(ctx, alice, "tok-1"); err != nil {
+			t.Fatalf("UnregisterDevice: %v", err)
+		}
+
+		// Gone from every listing, not merely inactive.
+		got := devices(t, s, alice, false)
+		if len(got) != 1 || got[0].FCMToken != "tok-2" {
+			t.Errorf("alice devices = %+v, want only tok-2", got)
+		}
+		// Bob's registration of the same token is untouched, and still active.
+		got = devices(t, s, bob, true)
+		if len(got) != 1 || got[0].FCMToken != "tok-1" || got[0].ID != bobID {
+			t.Errorf("bob active devices = %+v, want tok-1 with ID %d", got, bobID)
+		}
+
+		// Idempotent: the pair is already gone, and so was never registered.
+		if err := s.UnregisterDevice(ctx, alice, "tok-1"); err != nil {
+			t.Errorf("UnregisterDevice(again) = %v, want nil", err)
+		}
+		if err := s.UnregisterDevice(ctx, carol, "tok-1"); err != nil {
+			t.Errorf("UnregisterDevice(unknown identity) = %v, want nil", err)
+		}
+		if err := s.UnregisterDevice(ctx, alice, "nosuch"); err != nil {
+			t.Errorf("UnregisterDevice(unknown token) = %v, want nil", err)
+		}
+		if got := devices(t, s, bob, true); len(got) != 1 {
+			t.Errorf("bob active devices = %d after no-op unregisters, want 1", len(got))
+		}
+
+		// A pair can come back; it is a fresh registration.
+		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		if got := devices(t, s, alice, true); len(got) != 2 {
+			t.Errorf("alice active devices = %d after re-registering, want 2", len(got))
+		}
+	})
+
+	// Registration is an upsert on the pair. Racing first inserts of one pair
+	// must collapse to a single registration with a single ID, or an identity
+	// would be pushed to twice per message.
+	t.Run("ConcurrentRegistrationOfOnePairIsIdempotent", func(t *testing.T) {
+		s := newStore(t)
+		const writers = 8
+		ids := make(chan int64, writers)
+		errs := make(chan error, writers)
+		var wg sync.WaitGroup
+		for w := 0; w < writers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				id, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+				if err != nil {
+					errs <- err
+					return
+				}
+				ids <- id
+			}()
+		}
+		wg.Wait()
+		close(ids)
+		close(errs)
+		for err := range errs {
+			t.Fatalf("RegisterDevice: %v", err)
+		}
+		var first int64
+		for id := range ids {
+			if first == 0 {
+				first = id
+			}
+			if id != first {
+				t.Errorf("racing registrations returned IDs %d and %d, want one", first, id)
+			}
+		}
+		if got := devices(t, s, alice, false); len(got) != 1 {
+			t.Errorf("alice has %d devices after racing registrations, want 1", len(got))
+		}
+	})
+
 	t.Run("UpdateLastUsed", func(t *testing.T) {
 		s := newStore(t)
 		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
@@ -1131,6 +1321,9 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		}
 		if err := s.DeactivateDevice(ctx, "nosuch"); err != nil {
 			t.Errorf("DeactivateDevice(unknown) = %v, want nil", err)
+		}
+		if err := s.UnregisterDevice(ctx, alice, "nosuch"); err != nil {
+			t.Errorf("UnregisterDevice(unknown) = %v, want nil", err)
 		}
 		if got := devices(t, s, alice, false); len(got) != 0 {
 			t.Errorf("got %d devices, want 0", len(got))

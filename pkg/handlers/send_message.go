@@ -283,12 +283,14 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			// SendFCMNotification bounds every call it makes, so this carries no
 			// overall deadline: a shared budget would starve the tail of a long
 			// device list.
-			go func(recipient, messageID, title string) {
+			go func(recipient, messageID, title, box string) {
 				firebase.SendFCMNotification(writeCtx, s.Store, recipient, firebase.FCMPayload{
-					Title:     title,
-					MessageID: messageID,
+					Title:      title,
+					MessageID:  messageID,
+					Recipient:  recipient,
+					MessageBox: box,
 				})
-			}(fr.recipient, msgID, title)
+			}(fr.recipient, msgID, title, boxType)
 		}
 
 		results = append(results, SendMessageResult{Recipient: fr.recipient, MessageID: msgID})

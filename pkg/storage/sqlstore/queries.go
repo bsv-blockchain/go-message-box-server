@@ -413,19 +413,21 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 
 const deviceColumns = `id, identity_key, fcm_token, device_id, platform, active, created_at, updated_at, last_used`
 
-// RegisterDevice implements storage.DeviceStore. RETURNING reports the row's
-// id on both the insert and the DO UPDATE path, so a re-registration gets the
-// id the token was first stored under.
+// RegisterDevice implements storage.DeviceStore. It upserts on the pair, so a
+// second identity registering a token the first already holds gets a row of its
+// own and leaves the first untouched. RETURNING reports the row's id on both the
+// insert and the DO UPDATE path, so a re-registration gets the id the pair was
+// first stored under.
 func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64, error) {
 	now := nowUTC()
 	var id int64
 	err := s.queryRow(ctx,
 		`INSERT INTO device_registrations (identity_key, fcm_token, device_id, platform, created_at, updated_at, active, last_used)
 		 VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
-		 ON CONFLICT(fcm_token) DO UPDATE SET identity_key = ?, device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?
+		 ON CONFLICT(identity_key, fcm_token) DO UPDATE SET device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?
 		 RETURNING id`,
 		d.IdentityKey, d.FCMToken, d.DeviceID, d.Platform, now, now, now,
-		d.IdentityKey, d.DeviceID, d.Platform, now, now,
+		d.DeviceID, d.Platform, now, now,
 	).Scan(&id)
 	return id, err
 }
@@ -473,7 +475,8 @@ func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]st
 	return s.listDevices(ctx, identityKey, true)
 }
 
-// UpdateDeviceLastUsed implements storage.DeviceStore.
+// UpdateDeviceLastUsed implements storage.DeviceStore. It is keyed by token
+// alone, so it stamps every identity's registration of it.
 func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
 	now := nowUTC()
 	_, err := s.exec(ctx,
@@ -483,11 +486,23 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 	return err
 }
 
-// DeactivateDevice implements storage.DeviceStore.
+// DeactivateDevice implements storage.DeviceStore. It is keyed by token alone,
+// so it deactivates every identity's registration of it: FCM reported the token
+// dead, not one identity's use of it.
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.exec(ctx,
 		`UPDATE device_registrations SET active = FALSE, updated_at = ? WHERE fcm_token = ?`,
 		nowUTC(), fcmToken,
+	)
+	return err
+}
+
+// UnregisterDevice implements storage.DeviceStore. Both columns are in the
+// WHERE clause: the token alone would delete every identity's registration of it.
+func (s *Store) UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error {
+	_, err := s.exec(ctx,
+		`DELETE FROM device_registrations WHERE identity_key = ? AND fcm_token = ?`,
+		identityKey, fcmToken,
 	)
 	return err
 }
