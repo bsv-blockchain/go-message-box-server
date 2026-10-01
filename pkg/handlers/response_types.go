@@ -57,11 +57,13 @@ type SendMessageResponse struct {
 	Results []SendMessageResult `json:"results"`
 }
 
-// DeviceOut represents a device in responses.
+// DeviceOut represents a device in responses. DeviceID and Platform are null
+// when unset, not omitted: the TS client rejects a record that lacks either.
 // @Description Device registration object
 type DeviceOut struct {
-	DeviceID  *string `json:"deviceId,omitempty" example:"device-abc"`
-	Platform  *string `json:"platform,omitempty" example:"ios"`
+	ID        int64   `json:"id" example:"1"`
+	DeviceID  *string `json:"deviceId" example:"device-abc"`
+	Platform  *string `json:"platform" example:"ios"`
 	FCMToken  string  `json:"fcmToken" example:"...abc123"`
 	Active    bool    `json:"active" example:"true"`
 	CreatedAt string  `json:"createdAt" example:"2024-01-01T12:00:00.000Z"`
@@ -81,6 +83,9 @@ type ListDevicesResponse struct {
 type RegisterDeviceResponse struct {
 	Status  string `json:"status" example:"success"`
 	Message string `json:"message" example:"Device registered successfully for push notifications"`
+	// Registration ID, stable across re-registrations of the same token. Not
+	// the request's deviceId string: the name follows the TS reference server.
+	DeviceID int64 `json:"deviceId" example:"1"`
 }
 
 // SetPermissionResponse represents the response for setPermission.

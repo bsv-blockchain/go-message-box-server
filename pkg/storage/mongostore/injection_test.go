@@ -64,7 +64,7 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 	if err := s.SetPermission(ctx, realRecipient, nil, "inbox", storage.FeeBlocked); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"}); err != nil {
+	if _, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -20,6 +20,7 @@ type fakeStore struct {
 	messages map[string]*fakeMessage
 	perms    map[permKey]*storage.Permission
 	devices  map[string]*storage.Device
+	deviceID int64 // last device ID handed out
 	fees     map[string]int
 	handles  map[string]*storage.HandleRecord
 
@@ -252,14 +253,15 @@ func (f *fakeStore) ListPermissions(_ context.Context, q storage.PermissionQuery
 	return page, nil
 }
 
-func (f *fakeStore) RegisterDevice(_ context.Context, d storage.NewDevice) error {
+func (f *fakeStore) RegisterDevice(_ context.Context, d storage.NewDevice) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	ts := f.tick()
 	existing, ok := f.devices[d.FCMToken]
 	if !ok {
-		existing = &storage.Device{FCMToken: d.FCMToken, CreatedAt: ts}
+		f.deviceID++
+		existing = &storage.Device{ID: f.deviceID, FCMToken: d.FCMToken, CreatedAt: ts}
 		f.devices[d.FCMToken] = existing
 	}
 	existing.IdentityKey = d.IdentityKey
@@ -268,7 +270,7 @@ func (f *fakeStore) RegisterDevice(_ context.Context, d storage.NewDevice) error
 	existing.Active = true
 	existing.UpdatedAt = ts
 	existing.LastUsed = &ts
-	return nil
+	return existing.ID, nil
 }
 
 func (f *fakeStore) listDevices(identityKey string, activeOnly bool) []storage.Device {

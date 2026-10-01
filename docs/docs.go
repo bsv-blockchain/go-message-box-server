@@ -851,6 +851,10 @@ const docTemplate = `{
                     "type": "string",
                     "example": "...abc123"
                 },
+                "id": {
+                    "type": "integer",
+                    "example": 1
+                },
                 "lastUsed": {
                     "type": "string",
                     "example": "2024-01-01T12:00:00.000Z"
@@ -1207,6 +1211,11 @@ const docTemplate = `{
             "description": "Response after registering a device",
             "type": "object",
             "properties": {
+                "deviceId": {
+                    "description": "Registration ID, stable across re-registrations of the same token. Not\nthe request's deviceId string: the name follows the TS reference server.",
+                    "type": "integer",
+                    "example": 1
+                },
                 "message": {
                     "type": "string",
                     "example": "Device registered successfully for push notifications"

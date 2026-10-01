@@ -27,6 +27,7 @@ const (
 	feesColl        = "server_fees"
 	devicesColl     = "device_registrations"
 	handlesColl     = "handles"
+	countersColl    = "counters"
 )
 
 // Store is a MongoDB-backed storage.Store.
@@ -425,13 +426,41 @@ type deviceDoc struct {
 	CreatedAt   time.Time  `bson:"createdAt"`
 	UpdatedAt   time.Time  `bson:"updatedAt"`
 	LastUsed    *time.Time `bson:"lastUsed"`
+	// ID is the numeric ID storage.DeviceStore reports. The token is the
+	// natural key, so it comes from a counter; documents written before it
+	// existed lack it until their token next registers.
+	ID int64 `bson:"registrationId,omitempty"`
 }
 
-// RegisterDevice implements storage.DeviceStore.
-func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) error {
+// nextSeq allocates the next value of the named counter, starting at 1.
+func (s *Store) nextSeq(ctx context.Context, name string) (int64, error) {
+	var counter struct {
+		Seq int64 `bson:"seq"`
+	}
+	err := s.db.Collection(countersColl).FindOneAndUpdate(ctx,
+		bson.M{"_id": name},
+		bson.M{"$inc": bson.M{"seq": int64(1)}},
+		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
+	).Decode(&counter)
+	return counter.Seq, err
+}
+
+// RegisterDevice implements storage.DeviceStore. It allocates an ID up front
+// and keeps it only if the token is new, so a re-registration leaves a gap in
+// the sequence; IDs need to be unique and stable, not dense.
+func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64, error) {
+	seq, err := s.nextSeq(ctx, devicesColl)
+	if err != nil {
+		return 0, err
+	}
+
 	ts := now()
-	_, err := s.db.Collection(devicesColl).UpdateOne(ctx,
-		bson.M{"_id": d.FCMToken},
+	coll := s.db.Collection(devicesColl)
+	byToken := bson.M{"_id": d.FCMToken}
+	idOnly := bson.M{"registrationId": 1}
+	var doc deviceDoc
+	err = coll.FindOneAndUpdate(ctx,
+		byToken,
 		bson.M{
 			"$set": bson.M{
 				"identityKey": d.IdentityKey,
@@ -441,11 +470,30 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) error {
 				"updatedAt":   ts,
 				"lastUsed":    ts,
 			},
-			"$setOnInsert": bson.M{"createdAt": ts},
+			"$setOnInsert": bson.M{"createdAt": ts, "registrationId": seq},
 		},
-		options.UpdateOne().SetUpsert(true),
-	)
-	return err
+		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After).SetProjection(idOnly),
+	).Decode(&doc)
+	if err != nil {
+		return 0, err
+	}
+	if doc.ID > 0 {
+		return doc.ID, nil
+	}
+
+	// A document from before registrations had IDs. Fill it in only if it is
+	// still absent, so concurrent re-registrations agree on one, then read
+	// back whichever landed.
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": d.FCMToken, "registrationId": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"registrationId": seq}},
+	); err != nil {
+		return 0, err
+	}
+	if err := coll.FindOne(ctx, byToken, options.FindOne().SetProjection(idOnly)).Decode(&doc); err != nil {
+		return 0, err
+	}
+	return doc.ID, nil
 }
 
 // listDevices runs the shared device query with an optional active filter.
@@ -470,6 +518,7 @@ func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly 
 	var devices []storage.Device
 	for _, d := range docs {
 		devices = append(devices, storage.Device{
+			ID:          d.ID,
 			IdentityKey: d.IdentityKey,
 			FCMToken:    d.FCMToken,
 			DeviceID:    d.DeviceID,
