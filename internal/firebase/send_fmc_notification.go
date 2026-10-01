@@ -112,12 +112,17 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 	return &SendFCMNotificationResult{Success: true}
 }
 
+// notificationBody is the text shown under the title. The message ID used to
+// go here, which put an opaque identifier on the user's lock screen; the ID
+// still travels in the data payload for the app to act on.
+const notificationBody = "Open the app to view it."
+
 func buildMessage(token string, payload FCMPayload) *messaging.Message {
 	return &messaging.Message{
 		Token: token,
 		Notification: &messaging.Notification{
 			Title: payload.Title,
-			Body:  payload.MessageID,
+			Body:  notificationBody,
 		},
 		// Android configuration for headless service
 		Android: &messaging.AndroidConfig{
@@ -138,7 +143,7 @@ func buildMessage(token string, payload FCMPayload) *messaging.Message {
 					MutableContent: true,
 					Alert: &messaging.ApsAlert{ // include an alert so NSE can modify it
 						Title: payload.Title,
-						Body:  payload.MessageID,
+						Body:  notificationBody,
 					},
 				},
 				CustomData: map[string]interface{}{

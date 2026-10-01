@@ -19,10 +19,27 @@ func smartDefaultFee(messageBox string) int {
 	return 0
 }
 
-// shouldUseFCMDelivery reports whether delivery to this message box should also
-// trigger a push notification.
-func shouldUseFCMDelivery(messageBox string) bool {
-	return messageBox == notificationsBox
+// Payment boxes. PeerPay/BRC-29 payments land in payment_inbox and Mandala
+// token transfers in mandala-payments; a wallet that is backgrounded or killed
+// only learns about them in time if the delivery also raises a push.
+const (
+	paymentInboxBox    = "payment_inbox"
+	mandalaPaymentsBox = "mandala-payments"
+)
+
+// pushTitle reports whether delivery to this message box should also trigger a
+// push notification, and the title that push carries. The title is generic on
+// purpose: the server cannot read the (encrypted) message, and nothing about
+// the payment belongs on a lock screen.
+func pushTitle(messageBox string) (string, bool) {
+	switch messageBox {
+	case notificationsBox:
+		return "New Message", true
+	case paymentInboxBox, mandalaPaymentsBox:
+		return "Payment received", true
+	default:
+		return "", false
+	}
 }
 
 // recipientFee resolves the fee a sender must pay this recipient, trying the

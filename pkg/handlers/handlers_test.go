@@ -85,12 +85,24 @@ func TestSmartDefaultFee(t *testing.T) {
 	}
 }
 
-func TestShouldUseFCMDelivery(t *testing.T) {
-	if !shouldUseFCMDelivery("notifications") {
-		t.Error("shouldUseFCMDelivery(notifications) = false, want true")
+func TestPushTitle(t *testing.T) {
+	cases := []struct {
+		box       string
+		wantTitle string
+		wantPush  bool
+	}{
+		{"notifications", "New Message", true},
+		{"payment_inbox", "Payment received", true},
+		{"mandala-payments", "Payment received", true},
+		{"inbox", "", false},
+		{"payment_control", "", false},
+		{"", "", false},
 	}
-	if shouldUseFCMDelivery("inbox") {
-		t.Error("shouldUseFCMDelivery(inbox) = true, want false")
+	for _, c := range cases {
+		title, push := pushTitle(c.box)
+		if title != c.wantTitle || push != c.wantPush {
+			t.Errorf("pushTitle(%q) = (%q, %v), want (%q, %v)", c.box, title, push, c.wantTitle, c.wantPush)
+		}
 	}
 }
 
