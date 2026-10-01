@@ -227,10 +227,28 @@ func main() {
 	}
 }
 
+// parseNetwork maps BSV_NETWORK to the wallet's network. mainnet and testnet are
+// kept as aliases of the toolbox's main and test; ttn and tstn pass through. An
+// unknown value is an error rather than a silent mainnet: nothing downstream
+// checks that the wallet's network matches its storage server's.
+func parseNetwork(s string) (defs.BSVNetwork, error) {
+	switch strings.ToLower(s) {
+	case "mainnet":
+		return defs.NetworkMainnet, nil
+	case "testnet":
+		return defs.NetworkTestnet, nil
+	}
+	network, err := defs.ParseBSVNetworkStr(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid BSV_NETWORK %q: want mainnet, testnet, ttn or tstn", s)
+	}
+	return network, nil
+}
+
 func createWallet(cfg *config.Config) (sdk.Interface, func(), error) {
-	network := defs.NetworkMainnet
-	if cfg.BSVNetwork == "testnet" {
-		network = defs.NetworkTestnet
+	network, err := parseNetwork(cfg.BSVNetwork)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if cfg.WalletStorageURL != "" {
