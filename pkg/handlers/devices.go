@@ -27,7 +27,11 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "ERR_AUTHENTICATION_REQUIRED", "Authentication required.")
 		return
 	}
+	s.registerDevice(w, r, identityKey)
+}
 
+// registerDevice is RegisterDevice for an already-authenticated identity.
+func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request, identityKey string) {
 	var req RegisterDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "ERR_INVALID_JSON", "Invalid JSON body")
@@ -51,15 +55,17 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		DeviceID:    req.DeviceID,
 		Platform:    req.Platform,
 	}
-	if err := s.Store.RegisterDevice(r.Context(), newDevice); err != nil {
+	id, err := s.Store.RegisterDevice(r.Context(), newDevice)
+	if err != nil {
 		logger.Error("failed to register device", "error", err)
 		writeError(w, 500, "ERR_DATABASE_ERROR", "Failed to register device.")
 		return
 	}
 
 	writeJSON(w, 200, RegisterDeviceResponse{
-		Status:  "success",
-		Message: "Device registered successfully for push notifications",
+		Status:   "success",
+		Message:  "Device registered successfully for push notifications",
+		DeviceID: id,
 	})
 }
 
@@ -79,7 +85,11 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "ERR_AUTHENTICATION_REQUIRED", "Authentication required.")
 		return
 	}
+	s.listDevices(w, r, identityKey)
+}
 
+// listDevices is ListDevices for an already-authenticated identity.
+func (s *Server) listDevices(w http.ResponseWriter, r *http.Request, identityKey string) {
 	devices, err := s.Store.ListDevices(r.Context(), identityKey)
 	if err != nil {
 		logger.Error("failed to list devices", "error", err)
@@ -94,6 +104,7 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 			token = "..." + token[len(token)-10:]
 		}
 		dev := DeviceOut{
+			ID:        d.ID,
 			FCMToken:  token,
 			Active:    d.Active,
 			CreatedAt: formatTime(d.CreatedAt),

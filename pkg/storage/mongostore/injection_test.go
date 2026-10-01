@@ -64,7 +64,8 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 	if err := s.SetPermission(ctx, realRecipient, nil, "inbox", storage.FeeBlocked); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"}); err != nil {
+	realDeviceID, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,6 +178,37 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 			}
 			if len(active) != 1 {
 				t.Errorf("payload deactivated the real device: %d active, want 1", len(active))
+			}
+		})
+
+		// The token is the upsert's _id filter: if it matched structurally, the
+		// write would land on the real device and hand it to another identity.
+		t.Run("RegisterDevice/"+payload, func(t *testing.T) {
+			const attacker = "02attacker"
+			id, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: attacker, FCMToken: payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id == realDeviceID {
+				t.Errorf("payload got the real device's id %d", id)
+			}
+			real, err := s.ListDevices(ctx, realRecipient)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(real) != 1 || real[0].FCMToken != "tok-1" || real[0].ID != realDeviceID {
+				t.Errorf("real recipient's devices = %+v, want only tok-1 with id %d", real, realDeviceID)
+			}
+			theirs, err := s.ListDevices(ctx, attacker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored bool
+			for _, d := range theirs {
+				stored = stored || (d.FCMToken == payload && d.ID == id)
+			}
+			if !stored {
+				t.Errorf("payload not stored as a literal token: attacker has %+v", theirs)
 			}
 		})
 

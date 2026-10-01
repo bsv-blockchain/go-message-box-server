@@ -61,6 +61,9 @@ definitions:
       fcmToken:
         example: '...abc123'
         type: string
+      id:
+        example: 1
+        type: integer
       lastUsed:
         example: "2024-01-01T12:00:00.000Z"
         type: string
@@ -330,6 +333,12 @@ definitions:
   handlers.RegisterDeviceResponse:
     description: Response after registering a device
     properties:
+      deviceId:
+        description: |-
+          Registration ID, stable across re-registrations of the same token. Not
+          the request's deviceId string: the name follows the TS reference server.
+        example: 1
+        type: integer
       message:
         example: Device registered successfully for push notifications
         type: string

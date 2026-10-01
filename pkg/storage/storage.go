@@ -103,8 +103,10 @@ type PermissionStore interface {
 
 // DeviceStore stores push notification device registrations.
 type DeviceStore interface {
-	// RegisterDevice upserts on d.FCMToken, reactivating the device.
-	RegisterDevice(ctx context.Context, d NewDevice) error
+	// RegisterDevice upserts on d.FCMToken, reactivating the device, and
+	// returns the registration's ID: positive, unique per token, and the same
+	// on every re-registration of that token.
+	RegisterDevice(ctx context.Context, d NewDevice) (int64, error)
 
 	// ListDevices returns all devices for identityKey, most recently updated first.
 	ListDevices(ctx context.Context, identityKey string) ([]Device, error)

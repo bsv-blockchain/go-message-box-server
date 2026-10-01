@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/storagetest"
 )
@@ -171,5 +173,63 @@ func TestHandleTimesTruncateToMilliseconds(t *testing.T) {
 	}
 	if want := relIssued.Truncate(time.Millisecond); rec.ReleasedAt == nil || !rec.ReleasedAt.Equal(want) {
 		t.Errorf("tombstone releasedAt = %v, want %v", rec.ReleasedAt, want)
+	}
+}
+
+// TestRegisterDevice_BackfillsLegacyID covers device documents written before
+// registrations carried a numeric ID. $setOnInsert never fires for them, so
+// without a backfill re-registering such a token would report ID 0, which
+// @bsv/message-box-client rejects.
+func TestRegisterDevice_BackfillsLegacyID(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	ctx := context.Background()
+	s := newMongo(t, uri, database).(*Store)
+
+	const alice = "02alice"
+	ts := now()
+	if _, err := s.db.Collection(devicesColl).InsertOne(ctx, bson.M{
+		"_id": "legacy-tok", "identityKey": alice, "deviceId": nil, "platform": nil,
+		"active": true, "createdAt": ts, "updatedAt": ts, "lastUsed": ts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "legacy-tok"})
+	if err != nil {
+		t.Fatalf("RegisterDevice: %v", err)
+	}
+	if id < 1 {
+		t.Fatalf("id = %d, want a backfilled positive ID", id)
+	}
+	again, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "legacy-tok"})
+	if err != nil || again != id {
+		t.Fatalf("re-register = %d, %v; want %d, nil", again, err, id)
+	}
+	if fresh, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "new-tok"}); err != nil || fresh == id {
+		t.Fatalf("new token id = %d, %v; want one distinct from %d", fresh, err, id)
+	}
+
+	devices, err := s.ListDevices(ctx, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range devices {
+		if d.FCMToken != "legacy-tok" {
+			continue
+		}
+		if d.ID != id {
+			t.Errorf("listed legacy ID = %d, want %d", d.ID, id)
+		}
+		if !d.CreatedAt.Equal(ts) {
+			t.Errorf("legacy createdAt = %v, want it kept at %v", d.CreatedAt, ts)
+		}
 	}
 }

@@ -34,6 +34,10 @@ async function call(method: string, path: string, body?: unknown) {
 }
 
 describe('Go MessageBox Server — Devices', () => {
+  // The registration's numeric ID. @bsv/message-box-client >= 2.5 rejects a
+  // registration response without it, and a device record without it as id.
+  let registrationId: number
+
   test('should register a device', async () => {
     const { status, json } = await call('POST', '/registerDevice', {
       fcmToken: 'tok-integration-1',
@@ -43,21 +47,22 @@ describe('Go MessageBox Server — Devices', () => {
 
     expect(status).toBe(200)
     expect(json.status).toBe('success')
-    // The SQL autoincrement id is no longer part of the response.
-    expect(json).not.toHaveProperty('deviceId')
+    expect(typeof json.message).toBe('string')
+    expect(Number.isSafeInteger(json.deviceId) && json.deviceId >= 1).toBe(true)
+    registrationId = json.deviceId
   })
 
-  test('should list the registered device without an id field', async () => {
+  test('should list the registered device with its registration id', async () => {
     const { status, json } = await call('GET', '/devices')
 
     expect(status).toBe(200)
     expect(json.devices).toHaveLength(1)
     expect(json.devices[0]).toMatchObject({
+      id: registrationId,
       deviceId: 'dev-1',
       platform: 'ios',
       active: true
     })
-    expect(json.devices[0]).not.toHaveProperty('id')
     // The token is truncated to its last 10 characters in responses.
     expect(json.devices[0].fcmToken).toBe('...egration-1')
   })
@@ -71,6 +76,7 @@ describe('Go MessageBox Server — Devices', () => {
 
     const { json } = await call('GET', '/devices')
     expect(json.devices).toHaveLength(1)
+    expect(json.devices[0].id).toBe(registrationId)
     expect(json.devices[0].deviceId).toBe('dev-2')
     expect(json.devices[0].platform).toBe('android')
   })

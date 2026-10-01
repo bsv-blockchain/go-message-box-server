@@ -97,6 +97,7 @@ type NewDevice struct {
 
 // Device is a stored device registration.
 type Device struct {
+	ID          int64 // as returned by RegisterDevice
 	IdentityKey string
 	FCMToken    string
 	DeviceID    *string

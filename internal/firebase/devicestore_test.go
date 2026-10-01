@@ -19,7 +19,9 @@ type fakeDeviceStore struct {
 	lastUsed    []string
 }
 
-func (f *fakeDeviceStore) RegisterDevice(context.Context, storage.NewDevice) error { return nil }
+func (f *fakeDeviceStore) RegisterDevice(context.Context, storage.NewDevice) (int64, error) {
+	return 1, nil
+}
 
 func (f *fakeDeviceStore) ListDevices(context.Context, string) ([]storage.Device, error) {
 	return f.devices, f.listErr

@@ -882,11 +882,18 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 
 // --- devices ----------------------------------------------------------------
 
-func register(t *testing.T, s storage.Store, d storage.NewDevice) {
+func register(t *testing.T, s storage.Store, d storage.NewDevice) int64 {
 	t.Helper()
-	if err := s.RegisterDevice(context.Background(), d); err != nil {
+	id, err := s.RegisterDevice(context.Background(), d)
+	if err != nil {
 		t.Fatalf("RegisterDevice(%s): %v", d.FCMToken, err)
 	}
+	// Clients reject anything else: @bsv/message-box-client requires a
+	// positive safe integer, so a zero or overflowing ID fails registration.
+	if id < 1 || id > 1<<53-1 {
+		t.Fatalf("RegisterDevice(%s) id = %d, want a positive safe integer", d.FCMToken, id)
+	}
+	return id
 }
 
 func devices(t *testing.T, s storage.Store, identityKey string, activeOnly bool) []storage.Device {
@@ -1060,6 +1067,43 @@ func testDevices(t *testing.T, newStore NewStoreFunc) {
 		register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
 		if got := devices(t, s, alice, true); len(got) != 2 {
 			t.Errorf("ListActiveDevices returned %d after re-register, want 2", len(got))
+		}
+	})
+
+	// The ID is the registration's row identity: clients store it, and the
+	// device list reports it, so it must survive re-registration and must
+	// never be shared between tokens.
+	t.Run("IDIsStablePerToken", func(t *testing.T) {
+		s := newStore(t)
+		id1 := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1"})
+		id2 := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-2"})
+		id3 := register(t, s, storage.NewDevice{IdentityKey: bob, FCMToken: "tok-3"})
+		if id1 == id2 || id1 == id3 || id2 == id3 {
+			t.Fatalf("ids = %d, %d, %d, want distinct per token", id1, id2, id3)
+		}
+
+		if again := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-1", Platform: ptr("ios")}); again != id1 {
+			t.Errorf("re-register tok-1 id = %d, want %d", again, id1)
+		}
+		if err := s.DeactivateDevice(ctx, "tok-2"); err != nil {
+			t.Fatal(err)
+		}
+		if again := register(t, s, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-2"}); again != id2 {
+			t.Errorf("reactivate tok-2 id = %d, want %d", again, id2)
+		}
+
+		want := map[string]int64{"tok-1": id1, "tok-2": id2}
+		got := devices(t, s, alice, false)
+		if len(got) != len(want) {
+			t.Fatalf("got %d devices, want %d", len(got), len(want))
+		}
+		for _, d := range got {
+			if d.ID != want[d.FCMToken] {
+				t.Errorf("ListDevices %s ID = %d, want %d", d.FCMToken, d.ID, want[d.FCMToken])
+			}
+		}
+		if active := devices(t, s, bob, true); len(active) != 1 || active[0].ID != id3 {
+			t.Errorf("ListActiveDevices(bob) = %+v, want one device with ID %d", active, id3)
 		}
 	})
 

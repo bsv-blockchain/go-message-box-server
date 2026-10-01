@@ -411,19 +411,23 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 
 // --- devices ----------------------------------------------------------------
 
-const deviceColumns = `identity_key, fcm_token, device_id, platform, active, created_at, updated_at, last_used`
+const deviceColumns = `id, identity_key, fcm_token, device_id, platform, active, created_at, updated_at, last_used`
 
-// RegisterDevice implements storage.DeviceStore.
-func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) error {
+// RegisterDevice implements storage.DeviceStore. RETURNING reports the row's
+// id on both the insert and the DO UPDATE path, so a re-registration gets the
+// id the token was first stored under.
+func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64, error) {
 	now := nowUTC()
-	_, err := s.exec(ctx,
+	var id int64
+	err := s.queryRow(ctx,
 		`INSERT INTO device_registrations (identity_key, fcm_token, device_id, platform, created_at, updated_at, active, last_used)
 		 VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
-		 ON CONFLICT(fcm_token) DO UPDATE SET identity_key = ?, device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?`,
+		 ON CONFLICT(fcm_token) DO UPDATE SET identity_key = ?, device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?
+		 RETURNING id`,
 		d.IdentityKey, d.FCMToken, d.DeviceID, d.Platform, now, now, now,
 		d.IdentityKey, d.DeviceID, d.Platform, now, now,
-	)
-	return err
+	).Scan(&id)
+	return id, err
 }
 
 // listDevices runs the shared device query with an optional active filter.
@@ -448,7 +452,7 @@ func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly 
 			platform sql.NullString
 			lastUsed sql.NullTime
 		)
-		if err := rows.Scan(&d.IdentityKey, &d.FCMToken, &deviceID, &platform, &d.Active, &d.CreatedAt, &d.UpdatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&d.ID, &d.IdentityKey, &d.FCMToken, &deviceID, &platform, &d.Active, &d.CreatedAt, &d.UpdatedAt, &lastUsed); err != nil {
 			return nil, err
 		}
 		d.DeviceID = nullStr(deviceID)
