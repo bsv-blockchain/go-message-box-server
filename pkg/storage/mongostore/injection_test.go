@@ -181,8 +181,9 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 			}
 		})
 
-		// The token is the upsert's _id filter: if it matched structurally, the
-		// write would land on the real device and hand it to another identity.
+		// The token is half of the upsert's filter: if it matched structurally,
+		// the write would land on the real device's document instead of making
+		// the attacker one of its own.
 		t.Run("RegisterDevice/"+payload, func(t *testing.T) {
 			const attacker = "02attacker"
 			id, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: attacker, FCMToken: payload})
@@ -209,6 +210,27 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 			}
 			if !stored {
 				t.Errorf("payload not stored as a literal token: attacker has %+v", theirs)
+			}
+		})
+
+		// UnregisterDevice deletes, so a structural match would remove the real
+		// device's document: the token or the identity is a payload here, and
+		// neither may match more than the literal string.
+		t.Run("UnregisterDevice/"+payload, func(t *testing.T) {
+			for name, call := range map[string]func() error{
+				"token":    func() error { return s.UnregisterDevice(ctx, realRecipient, payload) },
+				"identity": func() error { return s.UnregisterDevice(ctx, payload, "tok-1") },
+			} {
+				if err := call(); err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				real, err := s.ListDevices(ctx, realRecipient)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(real) != 1 || real[0].FCMToken != "tok-1" || real[0].ID != realDeviceID {
+					t.Errorf("%s payload removed the real device: have %+v, want only tok-1 with id %d", name, real, realDeviceID)
+				}
 			}
 		})
 

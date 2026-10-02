@@ -88,6 +88,13 @@ type RegisterDeviceResponse struct {
 	DeviceID int64 `json:"deviceId" example:"1"`
 }
 
+// UnregisterDeviceResponse represents the response for unregisterDevice.
+// @Description Response after unregistering a device
+type UnregisterDeviceResponse struct {
+	Status  string `json:"status" example:"success"`
+	Message string `json:"message" example:"Device unregistered from push notifications"`
+}
+
 // SetPermissionResponse represents the response for setPermission.
 // @Description Response after setting a permission
 type SetPermissionResponse struct {

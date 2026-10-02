@@ -102,10 +102,16 @@ type PermissionStore interface {
 }
 
 // DeviceStore stores push notification device registrations.
+//
+// A registration is keyed by (identity key, FCM token), not by token alone: one
+// install of the wallet app has one FCM token but may hold several identities,
+// each of which registers the same token, and a push for any of them must reach
+// the device. Two identities on one token are two independent registrations.
 type DeviceStore interface {
-	// RegisterDevice upserts on d.FCMToken, reactivating the device, and
-	// returns the registration's ID: positive, unique per token, and the same
-	// on every re-registration of that token.
+	// RegisterDevice upserts on (d.IdentityKey, d.FCMToken), reactivating the
+	// registration, and returns its ID: positive, unique per registration, and
+	// the same on every re-registration of that pair. It never touches another
+	// identity's registration of the same token.
 	RegisterDevice(ctx context.Context, d NewDevice) (int64, error)
 
 	// ListDevices returns all devices for identityKey, most recently updated first.
@@ -114,12 +120,21 @@ type DeviceStore interface {
 	// ListActiveDevices is ListDevices restricted to active devices.
 	ListActiveDevices(ctx context.Context, identityKey string) ([]Device, error)
 
-	// UpdateDeviceLastUsed records that a notification was delivered to the token.
-	// An unknown token is a no-op, not an error.
+	// UpdateDeviceLastUsed records that a notification was delivered to the
+	// token. It applies to every registration of that token, whichever identity
+	// holds it. An unknown token is a no-op, not an error.
 	UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 
-	// DeactivateDevice marks a token as invalid. An unknown token is a no-op.
+	// DeactivateDevice marks a token as invalid, on every registration of it: a
+	// token FCM reports dead is dead for each identity that registered it. An
+	// unknown token is a no-op.
 	DeactivateDevice(ctx context.Context, fcmToken string) error
+
+	// UnregisterDevice deletes identityKey's registration of fcmToken, and only
+	// that one: another identity's registration of the same token is untouched.
+	// It is idempotent: a pair that is not registered is a no-op, not an error.
+	// A later RegisterDevice of the pair starts a new registration.
+	UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error
 }
 
 // FeeStore reads the server's configured delivery fees.

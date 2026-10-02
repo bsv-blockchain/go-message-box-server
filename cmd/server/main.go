@@ -148,6 +148,7 @@ func main() {
 	mux.HandleFunc("POST "+prefix+"/listMessages", srv.ListMessages)
 	mux.HandleFunc("POST "+prefix+"/acknowledgeMessage", srv.AcknowledgeMessage)
 	mux.HandleFunc("POST "+prefix+"/registerDevice", srv.RegisterDevice)
+	mux.HandleFunc("POST "+prefix+"/unregisterDevice", srv.UnregisterDevice)
 	mux.HandleFunc("GET "+prefix+"/devices", srv.ListDevices)
 	mux.HandleFunc("POST "+prefix+"/permissions/set", srv.SetPermission)
 	mux.HandleFunc("GET "+prefix+"/permissions/get", srv.GetPermission)

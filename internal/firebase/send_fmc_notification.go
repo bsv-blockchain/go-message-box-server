@@ -24,6 +24,11 @@ type FCMPayload struct {
 	Title      string
 	MessageID  string
 	Originator string
+	// Recipient is the identity key (compressed hex) the message was sent to,
+	// and MessageBox the box it landed in. One FCM token serves every identity
+	// on an install, so these tell the app which identity the push is for.
+	Recipient  string
+	MessageBox string
 }
 
 // SendFCMNotificationResult contains the result of a send operation.
@@ -130,6 +135,8 @@ func buildMessage(token string, payload FCMPayload) *messaging.Message {
 			Data: map[string]string{
 				"messageId":  payload.MessageID,
 				"originator": payload.Originator,
+				"recipient":  payload.Recipient,
+				"messageBox": payload.MessageBox,
 			},
 		},
 		// iOs configuration for mutable content and Notification Service Extension
@@ -149,6 +156,8 @@ func buildMessage(token string, payload FCMPayload) *messaging.Message {
 				CustomData: map[string]interface{}{
 					"messageId":  payload.MessageID,
 					"originator": payload.Originator,
+					"recipient":  payload.Recipient,
+					"messageBox": payload.MessageBox,
 				},
 			},
 		},

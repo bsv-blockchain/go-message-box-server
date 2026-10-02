@@ -41,6 +41,8 @@ func (f *fakeDeviceStore) DeactivateDevice(_ context.Context, fcmToken string) e
 	return nil
 }
 
+func (f *fakeDeviceStore) UnregisterDevice(context.Context, string, string) error { return nil }
+
 var _ storage.DeviceStore = (*fakeDeviceStore)(nil)
 
 // withClient installs a non-nil messaging client so IsEnabled() reports true.

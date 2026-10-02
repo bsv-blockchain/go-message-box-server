@@ -55,6 +55,12 @@ type RegisterDeviceRequest struct {
 	Platform *string `json:"platform,omitempty"`
 }
 
+// UnregisterDeviceRequest is the expected JSON body for /unregisterDevice.
+// @Description Request to remove the caller's registration of an FCM token
+type UnregisterDeviceRequest struct {
+	FCMToken string `json:"fcmToken"`
+}
+
 // SetPermissionRequest represents the request for setPermission.
 // @Description Request to set a permission
 type SetPermissionRequest struct {

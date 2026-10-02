@@ -96,6 +96,21 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// active, which a later index field does not disturb. Putting active
 			// between the two would push ListDevices into an in-memory sort.
 			{Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "updatedAt", Value: -1}, {Key: "active", Value: 1}}},
+			// A registration is one identity's hold on one token, and one install
+			// runs several identities on one token, so neither is unique alone.
+			// Partial, because a document written by a replica of the previous
+			// release has no fcmToken until the next boot backfills it, and
+			// indexing the missing field as null would let only one such
+			// document per identity exist: a second device registered through an
+			// old replica mid-deploy would fail on a duplicate key.
+			{
+				Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "fcmToken", Value: 1}},
+				Options: options.Index().SetUnique(true).
+					SetPartialFilterExpression(bson.D{{Key: "fcmToken", Value: bson.D{{Key: "$type", Value: "string"}}}}),
+			},
+			// DeactivateDevice and UpdateDeviceLastUsed look a token up on its
+			// own, on every push; the compound indexes above lead with identityKey.
+			{Keys: bson.D{{Key: "fcmToken", Value: 1}}},
 		},
 		handlesColl: {
 			// Look-alike handles collide here, which is what makes a claim's
@@ -113,6 +128,12 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 					SetPartialFilterExpression(bson.D{{Key: "identityKey", Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
 		},
+	}
+
+	// Before the indexes: the unique one cannot be built while an identity's
+	// documents all still lack fcmToken.
+	if err := s.backfillDeviceTokens(ctx); err != nil {
+		return err
 	}
 
 	for coll, models := range indexes {
@@ -418,7 +439,22 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 // --- devices ----------------------------------------------------------------
 
 type deviceDoc struct {
-	FCMToken    string     `bson:"_id"`
+	// DocID is the document key. A document written by the previous release
+	// keys on the token alone, as a string, and keeps that key for life. One
+	// written since keys on an ObjectID the server assigns, because the same
+	// token now belongs to one document per identity.
+	//
+	// It must not be a string. The previous release reads the key as the FCM
+	// token: it sends to it, and when FCM rejects it deactivates the document
+	// with that _id. While its replicas still serve during a rolling deploy, a
+	// string key is a registration they deactivate for good, since the wallet
+	// does not register a pair again once it has. The driver does not decode an
+	// ObjectID into their string key, so their listing for that identity fails
+	// and they send it nothing, and a write keyed on a string never matches one.
+	DocID any `bson:"_id"`
+	// FCMToken is the token proper. Documents of the previous release lack it
+	// until EnsureSchema backfills it from the key.
+	FCMToken    string     `bson:"fcmToken"`
 	IdentityKey string     `bson:"identityKey"`
 	DeviceID    *string    `bson:"deviceId"`
 	Platform    *string    `bson:"platform"`
@@ -426,10 +462,85 @@ type deviceDoc struct {
 	CreatedAt   time.Time  `bson:"createdAt"`
 	UpdatedAt   time.Time  `bson:"updatedAt"`
 	LastUsed    *time.Time `bson:"lastUsed"`
-	// ID is the numeric ID storage.DeviceStore reports. The token is the
-	// natural key, so it comes from a counter; documents written before it
-	// existed lack it until their token next registers.
+	// ID is the numeric ID storage.DeviceStore reports. The document key is not
+	// numeric, so it comes from a counter; documents written before it existed
+	// lack it until their token next registers.
 	ID int64 `bson:"registrationId,omitempty"`
+}
+
+// token is the document's FCM token. A document still waiting for the backfill
+// reads as its key, which is the token for exactly those documents, so a
+// replica of the previous release writing mid-deploy does not produce a device
+// with an empty token.
+func (d deviceDoc) token() string {
+	if d.FCMToken != "" {
+		return d.FCMToken
+	}
+	key, _ := d.DocID.(string)
+	return key
+}
+
+// byToken matches every document of a token: those holding it as fcmToken, and
+// those a replica of the previous release wrote mid-deploy, which are keyed by
+// the token and lack the field until the next boot backfills it. A key that is
+// not a string, as a new document's is not, never matches the second branch.
+func byToken(fcmToken string) bson.M {
+	return bson.M{"$or": bson.A{
+		bson.M{"fcmToken": fcmToken},
+		bson.M{"_id": fcmToken},
+	}}
+}
+
+// backfillDeviceTokens gives every document of the previous release its fcmToken,
+// copied from the key it was stored under. It is one update per document with an
+// in-server pipeline, so it is atomic per document and safe to run from several
+// replicas at once, and it is a no-op once nothing lacks the field. A document
+// a still-old replica writes mid-deploy is picked up by the next boot.
+//
+// That mid-deploy overlap can also leave an old-shape document and a new one for
+// the same (identityKey, fcmToken): an old replica and a new one both took the
+// registration. Giving the old one its fcmToken then collides with the unique
+// index. A boot that failed on that could not be recovered without editing the
+// database, so the collision is resolved instead: the document that already
+// holds the pair is the registration made through this release, and the
+// old-shape duplicate is dropped.
+func (s *Store) backfillDeviceTokens(ctx context.Context) error {
+	coll := s.db.Collection(devicesColl)
+	lacking := bson.M{"fcmToken": bson.M{"$exists": false}}
+	fromID := mongo.Pipeline{{{Key: "$set", Value: bson.D{{Key: "fcmToken", Value: "$_id"}}}}}
+
+	_, err := coll.UpdateMany(ctx, lacking, fromID)
+	if err == nil {
+		return nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return fmt.Errorf("failed to backfill device fcmToken: %w", err)
+	}
+
+	// Some document collides, and UpdateMany stopped at it. Take the rest one at
+	// a time, so the collision can be told from the documents that backfill.
+	cur, err := coll.Find(ctx, lacking, options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return fmt.Errorf("failed to list devices to backfill: %w", err)
+	}
+	var left []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &left); err != nil {
+		return fmt.Errorf("failed to list devices to backfill: %w", err)
+	}
+	for _, d := range left {
+		// Still without fcmToken, so a replica that got there first is not undone.
+		byDoc := bson.M{"_id": d.ID, "fcmToken": bson.M{"$exists": false}}
+		_, err := coll.UpdateOne(ctx, byDoc, fromID)
+		if mongo.IsDuplicateKeyError(err) {
+			_, err = coll.DeleteOne(ctx, byDoc)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to backfill device %q: %w", d.ID, err)
+		}
+	}
+	return nil
 }
 
 // nextSeq allocates the next value of the named counter, starting at 1.
@@ -445,9 +556,11 @@ func (s *Store) nextSeq(ctx context.Context, name string) (int64, error) {
 	return counter.Seq, err
 }
 
-// RegisterDevice implements storage.DeviceStore. It allocates an ID up front
-// and keeps it only if the token is new, so a re-registration leaves a gap in
-// the sequence; IDs need to be unique and stable, not dense.
+// RegisterDevice implements storage.DeviceStore. It upserts on (identityKey,
+// fcmToken), so another identity's document for the same token is never
+// matched. It allocates an ID up front and keeps it only if the pair is new, so
+// a re-registration leaves a gap in the sequence; IDs need to be unique and
+// stable, not dense.
 func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64, error) {
 	seq, err := s.nextSeq(ctx, devicesColl)
 	if err != nil {
@@ -456,24 +569,37 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 
 	ts := now()
 	coll := s.db.Collection(devicesColl)
-	byToken := bson.M{"_id": d.FCMToken}
+	byPair := bson.M{"identityKey": d.IdentityKey, "fcmToken": d.FCMToken}
 	idOnly := bson.M{"registrationId": 1}
-	var doc deviceDoc
-	err = coll.FindOneAndUpdate(ctx,
-		byToken,
-		bson.M{
-			"$set": bson.M{
-				"identityKey": d.IdentityKey,
-				"deviceId":    d.DeviceID,
-				"platform":    d.Platform,
-				"active":      true,
-				"updatedAt":   ts,
-				"lastUsed":    ts,
-			},
-			"$setOnInsert": bson.M{"createdAt": ts, "registrationId": seq},
+	update := bson.M{
+		"$set": bson.M{
+			"deviceId":  d.DeviceID,
+			"platform":  d.Platform,
+			"active":    true,
+			"updatedAt": ts,
+			"lastUsed":  ts,
 		},
-		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After).SetProjection(idOnly),
-	).Decode(&doc)
+		// identityKey and fcmToken come from the filter on insert, and the server
+		// assigns the ObjectID _id that deviceDoc.DocID explains.
+		"$setOnInsert": bson.M{
+			"createdAt":      ts,
+			"registrationId": seq,
+		},
+	}
+
+	var doc deviceDoc
+	// Two first registrations of one pair can race to insert, and the loser
+	// fails with a duplicate key on the pair's unique index, which the server
+	// does not retry for the caller. The document exists by then, so one retry
+	// is a plain update.
+	for attempt := 0; ; attempt++ {
+		err = coll.FindOneAndUpdate(ctx, byPair, update,
+			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After).SetProjection(idOnly),
+		).Decode(&doc)
+		if err == nil || attempt > 0 || !mongo.IsDuplicateKeyError(err) {
+			break
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -484,13 +610,14 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 	// A document from before registrations had IDs. Fill it in only if it is
 	// still absent, so concurrent re-registrations agree on one, then read
 	// back whichever landed.
+	byDoc := bson.M{"_id": doc.DocID}
 	if _, err := coll.UpdateOne(ctx,
-		bson.M{"_id": d.FCMToken, "registrationId": bson.M{"$exists": false}},
+		bson.M{"_id": doc.DocID, "registrationId": bson.M{"$exists": false}},
 		bson.M{"$set": bson.M{"registrationId": seq}},
 	); err != nil {
 		return 0, err
 	}
-	if err := coll.FindOne(ctx, byToken, options.FindOne().SetProjection(idOnly)).Decode(&doc); err != nil {
+	if err := coll.FindOne(ctx, byDoc, options.FindOne().SetProjection(idOnly)).Decode(&doc); err != nil {
 		return 0, err
 	}
 	return doc.ID, nil
@@ -515,12 +642,26 @@ func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly 
 		return nil, err
 	}
 
+	// A replica of the previous release that registers a pair this release
+	// already holds writes a second document for it, keyed by the bare token and
+	// without fcmToken, which the next boot's backfill drops. Until then it is
+	// the same registration twice, and a push to it would go out twice.
+	registered := map[string]bool{}
+	for _, d := range docs {
+		if d.FCMToken != "" {
+			registered[d.FCMToken] = true
+		}
+	}
+
 	var devices []storage.Device
 	for _, d := range docs {
+		if d.FCMToken == "" && registered[d.token()] {
+			continue
+		}
 		devices = append(devices, storage.Device{
 			ID:          d.ID,
 			IdentityKey: d.IdentityKey,
-			FCMToken:    d.FCMToken,
+			FCMToken:    d.token(),
 			DeviceID:    d.DeviceID,
 			Platform:    d.Platform,
 			Active:      d.Active,
@@ -542,22 +683,36 @@ func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]st
 	return s.listDevices(ctx, identityKey, true)
 }
 
-// UpdateDeviceLastUsed implements storage.DeviceStore.
+// UpdateDeviceLastUsed implements storage.DeviceStore. It is keyed by token
+// alone, so it stamps every identity's document for it.
 func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
 	ts := now()
-	_, err := s.db.Collection(devicesColl).UpdateOne(ctx,
-		bson.M{"_id": fcmToken},
+	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
+		byToken(fcmToken),
 		bson.M{"$set": bson.M{"lastUsed": ts, "updatedAt": ts}},
 	)
 	return err
 }
 
-// DeactivateDevice implements storage.DeviceStore.
+// DeactivateDevice implements storage.DeviceStore. It is keyed by token alone,
+// so it deactivates every identity's document for it: FCM reported the token
+// dead, not one identity's use of it.
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
-	_, err := s.db.Collection(devicesColl).UpdateOne(ctx,
-		bson.M{"_id": fcmToken},
+	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
+		byToken(fcmToken),
 		bson.M{"$set": bson.M{"active": false, "updatedAt": now()}},
 	)
+	return err
+}
+
+// UnregisterDevice implements storage.DeviceStore. The identity is in the
+// filter: the token alone would delete every identity's document for it. The
+// token matches as byToken does, so a document an old replica wrote for the
+// pair mid-deploy goes with the registration instead of pushing on.
+func (s *Store) UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error {
+	filter := byToken(fcmToken)
+	filter["identityKey"] = identityKey
+	_, err := s.db.Collection(devicesColl).DeleteMany(ctx, filter)
 	return err
 }
 
