@@ -1,22 +1,22 @@
 {
-  "name": "test-client",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "jest --verbose",
-    "test:ci": "jest --verbose --forceExit"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "devDependencies": {
-    "@bsv/message-box-client": "^2.5.4",
-    "@bsv/sdk": "^3.0.0",
-    "@types/jest": "^30.0.0",
-    "@types/node": "^25.9.8",
-    "jest": "^30.5.2",
-    "ts-jest": "^29.4.14",
-    "typescript": "^5.9.3"
-  }
+    "author": "",
+    "description": "",
+    "devDependencies": {
+        "@bsv/message-box-client": "^2.5.4",
+        "@bsv/sdk": "^3.0.0",
+        "@types/jest": "^30.0.0",
+        "@types/node": "^25.9.8",
+        "jest": "^30.5.2",
+        "ts-jest": "^29.4.14",
+        "typescript": "^5.9.3"
+    },
+    "keywords": [],
+    "license": "ISC",
+    "main": "index.js",
+    "name": "test-client",
+    "scripts": {
+        "test": "jest --verbose",
+        "test:ci": "jest --verbose --forceExit"
+    },
+    "version": "1.0.0"
 }
