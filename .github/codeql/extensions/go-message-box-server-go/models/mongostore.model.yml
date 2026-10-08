@@ -1,0 +1,47 @@
+# Barriers for go/sql-injection ("Database query built from user-controlled
+# sources") on the MongoDB store.
+#
+# CodeQL treats any client value that reaches a mongo filter as injectable,
+# because in general a filter can carry a client-supplied document such as
+# {"$ne": null}. These methods cannot: their parameters are typed Go strings,
+# []string, *string, ints, or structs of those, and the driver encodes each as a
+# BSON value, so an operator-shaped string is matched as that literal string.
+# TestOperatorPayloadsAreTreatedAsLiterals (pkg/storage/mongostore/
+# injection_test.go) proves that against a real server for every method here.
+#
+# FindHandles is left out on purpose: its value becomes a $regex pattern, which
+# is safe only because of regexp.QuoteMeta, and the scanner should keep
+# watching it.
+#
+# Parameters are zero-indexed and exclude the receiver, so Parameter[0] is ctx.
+# A method added to the Store, or a parameter whose type stops being a plain
+# value, needs its own review and row here.
+extensions:
+  - addsTo:
+      pack: codeql/go-all
+      extensible: barrierModel
+    data:
+      # messages
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ListMessages", "", "", "Parameter[1..2]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "PageMessages", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "AcknowledgeMessages", "", "", "Parameter[1..2]", "nosql-injection", "manual"]
+      # fees
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetServerDeliveryFee", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      # permissions
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "SetPermission", "", "", "Parameter[1..3]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "SetPermissionIfAbsent", "", "", "Parameter[1..3]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetPermission", "", "", "Parameter[1..3]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ListPermissions", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      # devices
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "RegisterDevice", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ListDevices", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ListActiveDevices", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "UpdateDeviceLastUsed", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "DeactivateDevice", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "UnregisterDevice", "", "", "Parameter[1..2]", "nosql-injection", "manual"]
+      # handles
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetHandleBySkeleton", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetHandleByIdentityKey", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ClaimHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ReleaseHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]
