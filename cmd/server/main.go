@@ -337,7 +337,7 @@ func createWalletWithLocalStorage(cfg *config.Config, network defs.BSVNetwork) (
 	logger.Log("Wallet initialized successfully with local storage")
 
 	return w, func() {
-		activeStorage.Stop()
+		activeStorage.Stop(context.Background())
 	}, nil
 }
 
