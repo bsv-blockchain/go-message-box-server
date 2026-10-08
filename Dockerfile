@@ -11,7 +11,7 @@ COPY . .
 # does not link on Alpine (musl). CGO stays on for mattn/go-sqlite3.
 RUN CGO_ENABLED=1 go build -tags nobdk -o messagebox-server ./cmd/server
 
-FROM alpine:3.19
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/messagebox-server .
