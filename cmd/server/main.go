@@ -15,14 +15,6 @@ import (
 	"time"
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
-	_ "github.com/bsv-blockchain/go-message-box-server/docs"
-	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
-	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
-	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/defs"
@@ -31,6 +23,15 @@ import (
 	toolboxwallet "github.com/bsv-blockchain/go-wallet-toolbox/pkg/wallet"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/wdk"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	_ "github.com/bsv-blockchain/go-message-box-server/docs"
+	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
+	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
+	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
 )
 
 // @title           MessageBox Server API

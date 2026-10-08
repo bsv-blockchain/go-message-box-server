@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	sdk "github.com/bsv-blockchain/go-sdk/wallet"
+
 	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
-	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // SendMessage godoc
