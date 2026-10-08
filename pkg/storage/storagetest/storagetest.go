@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -448,15 +449,7 @@ func permKeys(ps []storage.Permission) []string {
 }
 
 func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a, b)
 }
 
 func testPermissions(t *testing.T, newStore NewStoreFunc) {
@@ -746,7 +739,7 @@ func testPermissions(t *testing.T, newStore NewStoreFunc) {
 		// Byte order: uppercase (0x49, 0x4e) before lowercase (0x69), then the
 		// shared "inbox" prefix broken by nothing, '2' (0x32) and '_' (0x5f).
 		want := []string{"Inbox", "Notifications", "inbox", "inbox2", "inbox_2"}
-		var got []string
+		got := make([]string, 0, len(page.Items))
 		for _, p := range page.Items {
 			got = append(got, p.MessageBox)
 		}

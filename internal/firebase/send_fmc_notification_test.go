@@ -22,7 +22,7 @@ func TestLastN(t *testing.T) {
 		{"n less than length", "hello", 3, "llo"},
 		{"single char", "a", 1, "a"},
 		{"unicode string", "héllo", 3, "llo"},
-		{"unicode truncate", "世界你好", 2, "你好"},
+		{"unicode truncate", "世界你好", 2, "你好"}, //nolint:gosmopolitan // multi-byte runes are the point of this case
 	}
 
 	for _, tt := range tests {
@@ -77,8 +77,8 @@ func TestBuildMessage(t *testing.T) {
 	msg := buildMessage(token, payload)
 
 	t.Run("token is set", func(t *testing.T) {
-		if msg.Token != token {
-			t.Errorf("Token = %q, expected %q", msg.Token, token)
+		if msg.Token != token { //nolint:staticcheck // SA1019: buildMessage must set Token, see buildMessage
+			t.Errorf("Token = %q, expected %q", msg.Token, token) //nolint:staticcheck // SA1019: as above
 		}
 	})
 
@@ -207,7 +207,7 @@ func TestBuildMessage_CarriesRoutingFields(t *testing.T) {
 func TestBuildMessage_EmptyPayload(t *testing.T) {
 	msg := buildMessage("token", FCMPayload{})
 
-	if msg.Token != "token" {
+	if msg.Token != "token" { //nolint:staticcheck // SA1019: buildMessage must set Token, see buildMessage
 		t.Errorf("Token should be set even with empty payload")
 	}
 	if msg.Notification == nil {

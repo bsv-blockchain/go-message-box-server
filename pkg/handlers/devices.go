@@ -63,7 +63,7 @@ func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request, identity
 	}
 
 	writeJSON(w, 200, RegisterDeviceResponse{
-		Status:   "success",
+		Status:   statusSuccess,
 		Message:  "Device registered successfully for push notifications",
 		DeviceID: id,
 	})
@@ -114,7 +114,7 @@ func (s *Server) unregisterDevice(w http.ResponseWriter, r *http.Request, identi
 	}
 
 	writeJSON(w, 200, UnregisterDeviceResponse{
-		Status:  "success",
+		Status:  statusSuccess,
 		Message: "Device unregistered from push notifications",
 	})
 }
@@ -173,7 +173,7 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request, identityKey
 	}
 
 	writeJSON(w, 200, ListDevicesResponse{
-		Status:  "success",
+		Status:  statusSuccess,
 		Devices: out,
 	})
 }

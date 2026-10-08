@@ -231,9 +231,9 @@ func DiagnoseClaim(ctx context.Context, r HandleReader, c HandleClaim, cause err
 			// certificate would send the owner back for a newer one, which is
 			// the one thing that cannot fix it.
 			if c.IssuedAt.After(rec.IssuedAt) && c.SerialNumber != rec.SerialNumber {
-				sim, err := r.GetHandleBySkeleton(ctx, c.Skeleton)
-				if err != nil {
-					return 0, err
+				sim, simErr := r.GetHandleBySkeleton(ctx, c.Skeleton)
+				if simErr != nil {
+					return 0, simErr
 				}
 				if sim != nil && sim.Handle != c.Handle {
 					return 0, ErrHandleTooSimilar

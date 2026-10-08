@@ -1,5 +1,8 @@
 package handlers
 
+// statusSuccess is the status field of every successful response.
+const statusSuccess = "success"
+
 // ErrorResponse represents an error response.
 // @Description Error response with status, code, and description
 type ErrorResponse struct {

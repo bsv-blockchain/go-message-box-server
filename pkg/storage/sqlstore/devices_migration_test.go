@@ -222,7 +222,7 @@ func TestEnsureSchema_MigratesLegacyDevices_SQLite(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.db.SetMaxOpenConns(1)
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() { _ = s.Close() })
 		runLegacyMigration(t, s, legacyDevicesSQLite)
 	})
 
@@ -233,7 +233,7 @@ func TestEnsureSchema_MigratesLegacyDevices_SQLite(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() { _ = s.Close() })
 		runLegacyMigration(t, s, legacyDevicesSQLite)
 	})
 }
@@ -247,7 +247,7 @@ func TestEnsureSchema_MigratesLegacyDevices_Postgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx := context.Background()
 	for _, table := range []string{"messages", "messageBox", "message_permissions", "server_fees", "device_registrations"} {

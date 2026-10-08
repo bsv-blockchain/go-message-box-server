@@ -17,7 +17,7 @@ func TestAdminReleaseHandle(t *testing.T) {
 
 	call := func(caller, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		e.srv.adminReleaseHandle(w, httptest.NewRequest("POST", "/admin/handle/release", bytes.NewBufferString(body)), caller)
+		e.srv.adminReleaseHandle(w, httptest.NewRequestWithContext(t.Context(), "POST", "/admin/handle/release", bytes.NewBufferString(body)), caller)
 		return w
 	}
 
@@ -56,6 +56,6 @@ func TestAdminReleaseHandle(t *testing.T) {
 
 	// The no-auth route wrapper rejects.
 	w := httptest.NewRecorder()
-	e.srv.AdminReleaseHandle(w, httptest.NewRequest("POST", "/admin/handle/release", bytes.NewBufferString(`{"handle":"deggen"}`)))
+	e.srv.AdminReleaseHandle(w, httptest.NewRequestWithContext(t.Context(), "POST", "/admin/handle/release", bytes.NewBufferString(`{"handle":"deggen"}`)))
 	wantStatus(t, w, 401, "ERR_AUTH_REQUIRED")
 }

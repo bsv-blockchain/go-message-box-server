@@ -88,7 +88,7 @@ type PermissionStore interface {
 	// Both writes are safe to race, against themselves and each other, for the
 	// box-wide row as much as any other: concurrent callers leave exactly one
 	// row. mongostore gets that from a unique index covering null. A SQL UNIQUE
-	// constraint treats NULLs as distinct, so sqlstore serialises box-wide
+	// constraint treats NULLs as distinct, so sqlstore serializes box-wide
 	// writers itself; see sqlstore.withBoxWideLock.
 	SetPermissionIfAbsent(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error
 

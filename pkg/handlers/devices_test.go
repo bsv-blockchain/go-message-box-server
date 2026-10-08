@@ -40,8 +40,8 @@ const otherIdentityKey = "03b3f3bd6ee3d2d0d6d1a2b1f4c0a6d1b6a1f3c1e2d4a5b6c7d8e9
 
 func postRegisterDevice(t *testing.T, srv *Server, identityKey string, req map[string]any) map[string]any {
 	t.Helper()
-	body, _ := json.Marshal(req)
-	r := httptest.NewRequest("POST", "/registerDevice", bytes.NewReader(body))
+	body := mustMarshal(t, req)
+	r := httptest.NewRequestWithContext(t.Context(), "POST", "/registerDevice", bytes.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.registerDevice(w, r, identityKey)
@@ -91,7 +91,7 @@ func TestListDevices_ResponseSatisfiesClient(t *testing.T) {
 	reg := postRegisterDevice(t, srv, mockIdentityKey, map[string]any{"fcmToken": "token-without-extras"})
 	postRegisterDevice(t, srv, mockIdentityKey, map[string]any{"fcmToken": "tok-2", "deviceId": "pixel", "platform": "android"})
 
-	r := httptest.NewRequest("GET", "/devices", nil)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/devices", nil)
 	w := httptest.NewRecorder()
 	srv.listDevices(w, r, mockIdentityKey)
 	if w.Code != 200 {
@@ -157,19 +157,21 @@ func TestListDevices_ResponseSatisfiesClient(t *testing.T) {
 func listedTokens(t *testing.T, srv *Server, identityKey string) []string {
 	t.Helper()
 	w := httptest.NewRecorder()
-	srv.listDevices(w, httptest.NewRequest("GET", "/devices", nil), identityKey)
+	srv.listDevices(w, httptest.NewRequestWithContext(t.Context(), "GET", "/devices", nil), identityKey)
 	if w.Code != 200 {
 		t.Fatalf("listDevices status = %d, want 200; body %s", w.Code, w.Body)
 	}
-	var out []string
-	for _, item := range decodeJSON(t, w.Body)["devices"].([]any) {
+	devices := decodeJSON(t, w.Body)["devices"].([]any)
+	out := make([]string, 0, len(devices))
+	for _, item := range devices {
 		out = append(out, item.(map[string]any)["fcmToken"].(string))
 	}
 	return out
 }
 
-func postUnregisterDevice(srv *Server, identityKey, rawBody string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("POST", "/unregisterDevice", bytes.NewReader([]byte(rawBody)))
+func postUnregisterDevice(t *testing.T, srv *Server, identityKey, rawBody string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequestWithContext(t.Context(), "POST", "/unregisterDevice", bytes.NewReader([]byte(rawBody)))
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.unregisterDevice(w, r, identityKey)
@@ -201,7 +203,7 @@ func TestUnregisterDevice_RemovesOnlyTheCallersRegistration(t *testing.T) {
 	postRegisterDevice(t, srv, mockIdentityKey, map[string]any{"fcmToken": "other-token-0002"})
 	postRegisterDevice(t, srv, otherIdentityKey, map[string]any{"fcmToken": "shared-token-0001"})
 
-	w := postUnregisterDevice(srv, mockIdentityKey, `{"fcmToken":"shared-token-0001"}`)
+	w := postUnregisterDevice(t, srv, mockIdentityKey, `{"fcmToken":"shared-token-0001"}`)
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200; body %s", w.Code, w.Body)
 	}
@@ -229,7 +231,7 @@ func TestUnregisterDevice_IsIdempotent(t *testing.T) {
 		`{"fcmToken":"tok-1"}`,     // already gone
 		`{"fcmToken":"never-was"}`, // never registered
 	} {
-		w := postUnregisterDevice(srv, mockIdentityKey, body)
+		w := postUnregisterDevice(t, srv, mockIdentityKey, body)
 		if w.Code != 200 {
 			t.Fatalf("call %d: status = %d, want 200; body %s", i, w.Code, w.Body)
 		}
@@ -254,7 +256,7 @@ func TestUnregisterDevice_RejectsBadBodies(t *testing.T) {
 		"not json":      {`nope`, "ERR_INVALID_JSON"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := postUnregisterDevice(srv, mockIdentityKey, tc.body)
+			w := postUnregisterDevice(t, srv, mockIdentityKey, tc.body)
 			if w.Code != 400 {
 				t.Fatalf("status = %d, want 400; body %s", w.Code, w.Body)
 			}
@@ -268,7 +270,7 @@ func TestUnregisterDevice_RejectsBadBodies(t *testing.T) {
 func TestUnregisterDeviceHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 
-	req := httptest.NewRequest("POST", "/unregisterDevice", bytes.NewReader([]byte(`{"fcmToken":"tok-1"}`)))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/unregisterDevice", bytes.NewReader([]byte(`{"fcmToken":"tok-1"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.UnregisterDevice(w, req)

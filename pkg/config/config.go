@@ -1,3 +1,5 @@
+// Package config loads and validates the server configuration from environment
+// variables.
 package config
 
 import (

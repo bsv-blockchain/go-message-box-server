@@ -1,3 +1,6 @@
+// Package logger is a toggleable wrapper around log/slog for the server's debug
+// output. Log and Warn are silent until Enable is called (main enables them in
+// development); Error always logs.
 package logger
 
 import (

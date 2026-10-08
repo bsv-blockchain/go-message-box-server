@@ -36,7 +36,7 @@ func checkLookupBackend(cfg *config.Config) error {
 // opened it as a storage.Store.
 func lookupRegistry(cfg *config.Config, store any) (mbstorage.HandleStore, error) {
 	if !lookupEnabled(cfg) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // (nil, nil) is the documented "feature off" result
 	}
 	registry, ok := store.(mbstorage.HandleStore)
 	if !ok {

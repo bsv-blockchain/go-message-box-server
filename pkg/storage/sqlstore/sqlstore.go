@@ -7,11 +7,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"           // registers the "postgres" database/sql driver
+	_ "github.com/mattn/go-sqlite3" // registers the "sqlite3" database/sql driver
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
@@ -22,13 +23,22 @@ type Store struct {
 	driver string
 }
 
-// New opens a database connection.
+// New opens a database connection. It is NewContext without a deadline on the
+// initial ping.
 func New(driver, source string) (*Store, error) {
+	return NewContext(context.Background(), driver, source)
+}
+
+// NewContext opens a database connection and verifies it with a ping bounded by
+// ctx, so a host that accepts connections without answering fails instead of
+// hanging.
+func NewContext(ctx context.Context, driver, source string) (*Store, error) {
 	conn, err := sql.Open(driver, source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	if err := conn.Ping(); err != nil {
+	if err = conn.PingContext(ctx); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 	return &Store{db: conn, driver: driver}, nil
@@ -77,17 +87,17 @@ func (s *Store) rebind(query string) string {
 
 // exec wraps sql.DB.ExecContext with placeholder rebinding.
 func (s *Store) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.db.ExecContext(ctx, s.rebind(query), args...)
+	return s.db.ExecContext(ctx, s.rebind(query), args...) //nolint:gosec // G701: SQL is built only from constant fragments and ? placeholders; values are bound as args
 }
 
 // queryRow wraps sql.DB.QueryRowContext with placeholder rebinding.
 func (s *Store) queryRow(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.db.QueryRowContext(ctx, s.rebind(query), args...)
+	return s.db.QueryRowContext(ctx, s.rebind(query), args...) //nolint:gosec // G701: as exec
 }
 
 // query wraps sql.DB.QueryContext with placeholder rebinding.
 func (s *Store) query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.db.QueryContext(ctx, s.rebind(query), args...)
+	return s.db.QueryContext(ctx, s.rebind(query), args...) //nolint:gosec // G701: as exec
 }
 
 // nullStr converts a scanned nullable column to a pointer.
@@ -219,7 +229,7 @@ func (s *Store) rebuildSQLiteDevicesTable(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin device table rebuild: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	for _, stmt := range []string{
 		`DROP TABLE IF EXISTS ` + staging,
@@ -240,7 +250,7 @@ func (s *Store) rebuildSQLiteDevicesTable(ctx context.Context) error {
 	return nil
 }
 
-// sqliteMessagesIndex builds in one go. SQLite serialises writers anyway, so
+// sqliteMessagesIndex builds in one go. SQLite serializes writers anyway, so
 // there is no rolling-deploy window to protect.
 const sqliteMessagesIndex = `CREATE INDEX IF NOT EXISTS idx_messages_recipient_box ON ` + messagesIndexColumns
 
@@ -282,7 +292,7 @@ func sqliteMigrations() []string {
 		)`,
 		sqliteDevicesTable("device_registrations"),
 	}
-	return append(append(tables, sqliteMessagesIndex), commonMigrations()...)
+	return slices.Concat(tables, []string{sqliteMessagesIndex}, commonMigrations())
 }
 
 // postgresMessagesIndex builds without blocking writers. A plain CREATE INDEX
@@ -357,12 +367,10 @@ func postgresMigrations() []string {
 			active BOOLEAN DEFAULT TRUE
 		)`,
 	}
-	migrations := append(tables, postgresMessagesIndex...)
-	migrations = append(migrations, commonMigrations()...)
-	// Last, so the (identity_key, fcm_token) index from commonMigrations
-	// already guards the table when the old key goes: there is no moment with
-	// neither.
-	return append(migrations, postgresDropLegacyTokenKey)
+	// postgresDropLegacyTokenKey goes last, so the (identity_key, fcm_token)
+	// index from commonMigrations already guards the table when the old key
+	// goes: there is no moment with neither.
+	return slices.Concat(tables, postgresMessagesIndex, commonMigrations(), []string{postgresDropLegacyTokenKey})
 }
 
 // postgresDropLegacyTokenKey drops the unique constraint an old database has on
@@ -374,6 +382,8 @@ func postgresMigrations() []string {
 // During a rolling deploy, replicas still on the old release upsert with
 // ON CONFLICT (fcm_token), which no longer has a key to infer from. Their
 // /registerDevice calls fail until they are replaced.
+//
+//nolint:gosec // G101: a migration statement; the name only mentions the FCM token key
 const postgresDropLegacyTokenKey = `DO $$
 	DECLARE legacy text;
 	BEGIN

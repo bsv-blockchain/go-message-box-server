@@ -31,6 +31,7 @@ type fakeStore struct {
 
 type fakeMessage struct {
 	storage.NewMessage
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -209,7 +210,7 @@ func (f *fakeStore) GetPermission(_ context.Context, recipient string, sender *s
 
 	p, ok := f.perms[makePermKey(recipient, sender, messageBox)]
 	if !ok {
-		return nil, nil
+		return nil, nil //nolint:nilnil // PermissionStore contract: no permission is (nil, nil)
 	}
 	clone := *p
 	return &clone, nil
@@ -351,5 +352,5 @@ func TestConformance_Fake(t *testing.T) {
 }
 
 func TestConformance_FakeHandles(t *testing.T) {
-	storagetest.RunHandleStoreTests(t, func(t *testing.T) storage.HandleStore { return newFakeStore() })
+	storagetest.RunHandleStoreTests(t, func(_ *testing.T) storage.HandleStore { return newFakeStore() })
 }

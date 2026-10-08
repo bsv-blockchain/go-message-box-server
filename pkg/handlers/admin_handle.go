@@ -84,5 +84,5 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 	}
 	// Always logged, not only in development: this is the audit trail.
 	slog.Warn("admin released handle", "handle", handle, "admin", caller, "previousIdentityKey", previousKey, "cooldown", rel.CooldownUntil != nil)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "success", "handle": handle})
+	writeJSON(w, http.StatusOK, map[string]string{"status": statusSuccess, "handle": handle})
 }

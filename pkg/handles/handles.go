@@ -29,8 +29,13 @@ func BRFCID(title, author, version string) string {
 	return hex.EncodeToString(h2[:])[:12]
 }
 
+// Validate's errors.
 var (
-	ErrInvalidHandle  = errors.New("invalid handle")
+	// ErrInvalidHandle reports a handle outside the allowed syntax: 3 to 32
+	// characters of [a-z0-9._-], starting and ending with a letter or digit.
+	ErrInvalidHandle = errors.New("invalid handle")
+	// ErrReservedHandle reports a handle that folds to the skeleton of a
+	// reserved name such as admin or support.
 	ErrReservedHandle = errors.New("reserved handle")
 )
 
@@ -69,7 +74,7 @@ var (
 
 // Skeleton folds s to the form under which look-alike handles collide. It
 // accepts any string, including a partial search query, and may return "".
-// It is a fold, not a sanitiser: every character it does not fold away is
+// It is a fold, not a sanitizer: every character it does not fold away is
 // preserved, so a caller that builds a regex from the result must escape it
 // with regexp.QuoteMeta first. Folding is ASCII-only, so a non-ASCII query
 // yields a skeleton that matches nothing stored (Validate rejects non-ASCII

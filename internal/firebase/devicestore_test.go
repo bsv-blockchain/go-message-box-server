@@ -94,6 +94,7 @@ func TestSendFCMNotification_ListError(t *testing.T) {
 // a lock held on device_registrations or an unresponsive Mongo primary.
 type blockingDeviceStore struct {
 	fakeDeviceStore
+
 	listWaited chan time.Duration
 }
 
