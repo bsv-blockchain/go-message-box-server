@@ -129,13 +129,11 @@ definitions:
         example: msg-123
         type: string
       offset:
-        description: Offset skips this many matching messages before the returned
-          page.
+        description: Offset skips this many matching messages before the returned page.
         example: 0
         type: integer
       skip:
-        description: Skip is a compatibility alias for Offset; if both are given they
-          must match.
+        description: Skip is a compatibility alias for Offset; if both are given they must match.
         example: 0
         type: integer
     type: object
@@ -421,15 +419,14 @@ definitions:
 host: localhost:8080
 info:
   contact: {}
-  description: API for message delivery, retrieval, acknowledgement and permissions.
-    Uses BRC-31/BRC-104 mutual authentication.
+  description: API for message delivery, retrieval, acknowledgement and permissions. Uses BRC-31/BRC-104 mutual authentication.
   title: MessageBox Server API
   version: 1.0.0
 paths:
   /.well-known/bsvalias:
     get:
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -438,22 +435,21 @@ paths:
             type: object
       summary: Paymail capability discovery
       tags:
-      - lookup
+        - lookup
   /acknowledgeMessage:
     post:
       consumes:
-      - application/json
-      description: Removes acknowledged messages from the database for the authenticated
-        identity. Used after a client has received and processed messages.
+        - application/json
+      description: Removes acknowledged messages from the database for the authenticated identity. Used after a client has received and processed messages.
       parameters:
-      - description: Message IDs to acknowledge
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.AcknowledgeMessageRequest'
+        - description: Message IDs to acknowledge
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.AcknowledgeMessageRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -472,23 +468,23 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Acknowledge receipt of messages
       tags:
-      - Messages
+        - Messages
   /admin/handle/release:
     post:
       consumes:
-      - application/json
+        - application/json
       parameters:
-      - description: Handle to release
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.AdminReleaseRequest'
+        - description: Handle to release
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.AdminReleaseRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -513,24 +509,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Operator release of a handle (lost keys)
       tags:
-      - lookup
+        - lookup
   /api/handle:
     put:
       consumes:
-      - application/json
+        - application/json
       parameters:
-      - description: Self-signed profile certificate
-        in: body
-        name: certificate
-        required: true
-        schema:
-          additionalProperties: true
-          type: object
+        - description: Self-signed profile certificate
+          in: body
+          name: certificate
+          required: true
+          schema:
+            additionalProperties: true
+            type: object
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -552,17 +548,17 @@ paths:
             $ref: '#/definitions/handlers.ErrorResponse'
       summary: Register, update or release a handle
       tags:
-      - lookup
+        - lookup
   /api/handle/{query}:
     get:
       parameters:
-      - description: Partial or full handle, optionally @domain
-        in: path
-        name: query
-        required: true
-        type: string
+        - description: Partial or full handle, optionally @domain
+          in: path
+          name: query
+          required: true
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -573,17 +569,17 @@ paths:
             type: array
       summary: Search handles (capability 0ace65da5987)
       tags:
-      - lookup
+        - lookup
   /api/handle/available/{handle}:
     get:
       parameters:
-      - description: Handle
-        in: path
-        name: handle
-        required: true
-        type: string
+        - description: Handle
+          in: path
+          name: handle
+          required: true
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -591,17 +587,17 @@ paths:
             $ref: '#/definitions/handlers.AvailabilityResponse'
       summary: Check whether a handle can be registered
       tags:
-      - lookup
+        - lookup
   /api/identityKey/{pubkey}:
     get:
       parameters:
-      - description: Compressed public key, hex
-        in: path
-        name: pubkey
-        required: true
-        type: string
+        - description: Compressed public key, hex
+          in: path
+          name: pubkey
+          required: true
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -614,13 +610,12 @@ paths:
             $ref: '#/definitions/handlers.ErrorResponse'
       summary: Reverse lookup (capability 43dcf83ddc5f)
       tags:
-      - lookup
+        - lookup
   /devices:
     get:
-      description: Returns all devices registered for push notifications for the authenticated
-        identity.
+      description: Returns all devices registered for push notifications for the authenticated identity.
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -635,29 +630,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: List registered devices
       tags:
-      - Devices
+        - Devices
   /listMessages:
     post:
       consumes:
-      - application/json
-      description: Returns one deterministic, bounded page of stored messages for
-        the specified messageBox belonging to the authenticated identity, most recently
-        paginated with limit/offset (skip is a compatibility alias for offset) and
-        optionally filtered to a single messageId. If the box does not exist or has
-        no messages, an empty page is returned. Existing clients that send only messageBox
-        get the first page of up to the server's default limit.
+        - application/json
+      description: Returns one deterministic, bounded page of stored messages for the specified messageBox belonging to the authenticated identity, most recently paginated with limit/offset (skip is a compatibility alias for offset) and optionally filtered to a single messageId. If the box does not exist or has no messages, an empty page is returned. Existing clients that send only messageBox get the first page of up to the server's default limit.
       parameters:
-      - description: Message box to list messages from, with optional pagination
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.ListMessagesRequest'
+        - description: Message box to list messages from, with optional pagination
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.ListMessagesRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -672,8 +662,7 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "413":
-          description: the oldest message in the page exceeds the configured response
-            byte budget
+          description: the oldest message in the page exceeds the configured response byte budget
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "500":
@@ -681,26 +670,25 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Retrieve messages from a message box
       tags:
-      - Messages
+        - Messages
   /permissions/get:
     get:
-      description: Retrieves the permission setting for a specific sender or box-wide
-        default for the authenticated identity.
+      description: Retrieves the permission setting for a specific sender or box-wide default for the authenticated identity.
       parameters:
-      - description: Name of the message box
-        in: query
-        name: messageBox
-        required: true
-        type: string
-      - description: Sender's public key (omit for box-wide setting)
-        in: query
-        name: sender
-        type: string
+        - description: Name of the message box
+          in: query
+          name: messageBox
+          required: true
+          type: string
+        - description: Sender's public key (omit for box-wide setting)
+          in: query
+          name: sender
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -719,33 +707,32 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Get a message permission
       tags:
-      - Permissions
+        - Permissions
   /permissions/list:
     get:
-      description: Returns all permission settings for the authenticated identity,
-        optionally filtered by message box.
+      description: Returns all permission settings for the authenticated identity, optionally filtered by message box.
       parameters:
-      - description: Filter by message box name
-        in: query
-        name: messageBox
-        type: string
-      - description: Maximum number of results (1-1000, default 100)
-        in: query
-        name: limit
-        type: integer
-      - description: Number of results to skip (default 0)
-        in: query
-        name: offset
-        type: integer
-      - description: 'Sort order: ''asc'' or ''desc'' (default ''desc'')'
-        in: query
-        name: createdAtOrder
-        type: string
+        - description: Filter by message box name
+          in: query
+          name: messageBox
+          type: string
+        - description: Maximum number of results (1-1000, default 100)
+          in: query
+          name: limit
+          type: integer
+        - description: Number of results to skip (default 0)
+          in: query
+          name: offset
+          type: integer
+        - description: 'Sort order: ''asc'' or ''desc'' (default ''desc'')'
+          in: query
+          name: createdAtOrder
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -764,28 +751,26 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: List message permissions
       tags:
-      - Permissions
+        - Permissions
   /permissions/quote:
     get:
-      description: Returns fee information for sending a message to one or more recipients.
-        Single recipient returns QuoteSingleResponse, multiple recipients returns
-        QuoteMultiResponse.
+      description: Returns fee information for sending a message to one or more recipients. Single recipient returns QuoteSingleResponse, multiple recipients returns QuoteMultiResponse.
       parameters:
-      - description: Recipient public key (can be repeated for multiple recipients)
-        in: query
-        name: recipient
-        required: true
-        type: string
-      - description: Name of the message box
-        in: query
-        name: messageBox
-        required: true
-        type: string
+        - description: Recipient public key (can be repeated for multiple recipients)
+          in: query
+          name: recipient
+          required: true
+          type: string
+        - description: Name of the message box
+          in: query
+          name: messageBox
+          required: true
+          type: string
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: Multiple recipient quote
@@ -804,26 +789,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Get a delivery quote
       tags:
-      - Permissions
+        - Permissions
   /permissions/set:
     post:
       consumes:
-      - application/json
-      description: Sets fee requirements for receiving messages. Use recipientFee=0
-        for free, recipientFee=-1 to block, or a positive value for required payment
-        in satoshis. Omit sender for box-wide defaults.
+        - application/json
+      description: Sets fee requirements for receiving messages. Use recipientFee=0 for free, recipientFee=-1 to block, or a positive value for required payment in satoshis. Omit sender for box-wide defaults.
       parameters:
-      - description: Permission settings
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.SetPermissionRequest'
+        - description: Permission settings
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.SetPermissionRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -842,28 +825,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Set a message permission
       tags:
-      - Permissions
+        - Permissions
   /registerDevice:
     post:
       consumes:
-      - application/json
-      description: 'Registers a device with an FCM token for receiving push notifications.
-        Supports iOS, Android, and web platforms. A registration belongs to the authenticated
-        identity and the token together: several identities can register the same
-        token (a wallet with several profiles on one install), and each is pushed
-        to separately. Registering again is idempotent and returns the same deviceId.'
+        - application/json
+      description: 'Registers a device with an FCM token for receiving push notifications. Supports iOS, Android, and web platforms. A registration belongs to the authenticated identity and the token together: several identities can register the same token (a wallet with several profiles on one install), and each is pushed to separately. Registering again is idempotent and returns the same deviceId.'
       parameters:
-      - description: Device registration details
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.RegisterDeviceRequest'
+        - description: Device registration details
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.RegisterDeviceRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -882,26 +861,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Register a device for push notifications
       tags:
-      - Devices
+        - Devices
   /sendMessage:
     post:
       consumes:
-      - application/json
-      description: Inserts a message into the target recipient's message box. Supports
-        single or multiple recipients. Payment may be required depending on recipient's
-        fee settings.
+        - application/json
+      description: Inserts a message into the target recipient's message box. Supports single or multiple recipients. Payment may be required depending on recipient's fee settings.
       parameters:
-      - description: Message to send
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.SendMessageRequest'
+        - description: Message to send
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.SendMessageRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -924,26 +901,24 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Send a message to recipient(s)
       tags:
-      - Messages
+        - Messages
   /unregisterDevice:
     post:
       consumes:
-      - application/json
-      description: 'Removes the authenticated identity''s registration of an FCM token,
-        and only that one: other identities that registered the same token keep theirs.
-        Idempotent: it succeeds whether or not the identity had registered the token.'
+        - application/json
+      description: 'Removes the authenticated identity''s registration of an FCM token, and only that one: other identities that registered the same token keep theirs. Idempotent: it succeeds whether or not the identity had registered the token.'
       parameters:
-      - description: Token to unregister
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.UnregisterDeviceRequest'
+        - description: Token to unregister
+          in: body
+          name: request
+          required: true
+          schema:
+            $ref: '#/definitions/handlers.UnregisterDeviceRequest'
       produces:
-      - application/json
+        - application/json
       responses:
         "200":
           description: OK
@@ -962,14 +937,13 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       security:
-      - BSVAuth: []
+        - BSVAuth: []
       summary: Unregister a device from push notifications
       tags:
-      - Devices
+        - Devices
 securityDefinitions:
   BSVAuth:
-    description: BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-*
-      headers (identity-key, nonce, signature, etc.)
+    description: BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-* headers (identity-key, nonce, signature, etc.)
     in: header
     name: x-bsv-auth-identity-key
     type: apiKey

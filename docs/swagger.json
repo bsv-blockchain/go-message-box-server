@@ -1,62 +1,611 @@
 {
-    "swagger": "2.0",
-    "info": {
-        "description": "API for message delivery, retrieval, acknowledgement and permissions. Uses BRC-31/BRC-104 mutual authentication.",
-        "title": "MessageBox Server API",
-        "contact": {},
-        "version": "1.0.0"
+    "basePath": "/",
+    "definitions": {
+        "handlers.AcknowledgeMessageRequest": {
+            "description": "Request to acknowledge (delete) messages",
+            "properties": {
+                "messageIds": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.AdminReleaseRequest": {
+            "properties": {
+                "handle": {
+                    "type": "string"
+                },
+                "skipCooldown": {
+                    "description": "SkipCooldown defaults to true: the usual case is a user who lost their\nkey and, after out-of-band verification, re-registers with a new one.\nOnly an active handle can be released; a handle already tombstoned by its\nowner answers 404, and its cooldown cannot be lifted from here (the\nprevious owner may reclaim it inside the cooldown regardless).",
+                    "type": "boolean"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.AvailabilityResponse": {
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "description": "taken | too_similar | reserved | invalid | cooldown | stale",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.DeliveryBlockedError": {
+            "description": "Error response when delivery is blocked for some recipients",
+            "properties": {
+                "blockedRecipients": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "code": {
+                    "example": "ERR_DELIVERY_BLOCKED",
+                    "type": "string"
+                },
+                "description": {
+                    "example": "Blocked recipients: 03abc...",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "error",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.DeviceOut": {
+            "description": "Device registration object",
+            "properties": {
+                "active": {
+                    "example": true,
+                    "type": "boolean"
+                },
+                "createdAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                },
+                "deviceId": {
+                    "example": "device-abc",
+                    "type": "string"
+                },
+                "fcmToken": {
+                    "example": "...abc123",
+                    "type": "string"
+                },
+                "id": {
+                    "example": 1,
+                    "type": "integer"
+                },
+                "lastUsed": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                },
+                "platform": {
+                    "example": "ios",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.ErrorResponse": {
+            "description": "Error response with status, code, and description",
+            "properties": {
+                "code": {
+                    "example": "ERR_INVALID_REQUEST",
+                    "type": "string"
+                },
+                "description": {
+                    "example": "Invalid request parameters",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "error",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.GetPermissionResponse": {
+            "description": "Response containing permission details",
+            "properties": {
+                "description": {
+                    "example": "Permission setting found.",
+                    "type": "string"
+                },
+                "permission": {
+                    "$ref": "#/definitions/handlers.PermissionDetail"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.ListDevicesResponse": {
+            "description": "Response containing list of devices",
+            "properties": {
+                "devices": {
+                    "items": {
+                        "$ref": "#/definitions/handlers.DeviceOut"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.ListMessagesRequest": {
+            "description": "Request to list messages from a message box",
+            "properties": {
+                "limit": {
+                    "description": "Limit caps the number of messages returned; defaults to the server's\nconfigured LIST_DEFAULT_LIMIT.",
+                    "example": 100,
+                    "type": "integer"
+                },
+                "messageBox": {
+                    "example": "inbox",
+                    "type": "string"
+                },
+                "messageId": {
+                    "description": "MessageID, if given, restricts the page to the single message with this\nexact ID (still subject to Limit/Offset).",
+                    "example": "msg-123",
+                    "type": "string"
+                },
+                "offset": {
+                    "description": "Offset skips this many matching messages before the returned page.",
+                    "example": 0,
+                    "type": "integer"
+                },
+                "skip": {
+                    "description": "Skip is a compatibility alias for Offset; if both are given they must match.",
+                    "example": 0,
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.ListMessagesResponse": {
+            "description": "Response containing a page of messages plus pagination state",
+            "properties": {
+                "hasMore": {
+                    "description": "HasMore reports whether at least one further matching message exists\nbeyond this page.",
+                    "example": false,
+                    "type": "boolean"
+                },
+                "limit": {
+                    "description": "Limit is the page size that was applied (the request's limit, or the\nserver's configured default when none was given).",
+                    "example": 1000,
+                    "type": "integer"
+                },
+                "messages": {
+                    "items": {
+                        "$ref": "#/definitions/handlers.MessageOut"
+                    },
+                    "type": "array"
+                },
+                "nextOffset": {
+                    "description": "NextOffset is Offset plus the number of messages actually returned; pass\nit as the next request's offset to continue paging.",
+                    "example": 1000,
+                    "type": "integer"
+                },
+                "offset": {
+                    "description": "Offset is the request's offset (or skip), echoed back.",
+                    "example": 0,
+                    "type": "integer"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.ListPermissionsResponse": {
+            "description": "Response containing list of permissions",
+            "properties": {
+                "permissions": {
+                    "items": {
+                        "$ref": "#/definitions/handlers.PermissionDetailList"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                },
+                "totalCount": {
+                    "example": 10,
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.MessageOut": {
+            "description": "Message object returned by listMessages",
+            "properties": {
+                "body": {
+                    "example": "{\"text\":\"Hello\"}",
+                    "type": "string"
+                },
+                "createdAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                },
+                "messageId": {
+                    "example": "abc123",
+                    "type": "string"
+                },
+                "sender": {
+                    "example": "03abc...",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.PermissionDetail": {
+            "description": "Permission details (camelCase for getPermission endpoint)",
+            "properties": {
+                "createdAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                },
+                "messageBox": {
+                    "example": "inbox",
+                    "type": "string"
+                },
+                "recipientFee": {
+                    "example": 100,
+                    "type": "integer"
+                },
+                "sender": {
+                    "example": "03abc...",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "payment_required",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.PermissionDetailList": {
+            "description": "Permission details (snake_case for listPermissions endpoint)",
+            "properties": {
+                "created_at": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                },
+                "message_box": {
+                    "example": "inbox",
+                    "type": "string"
+                },
+                "recipient_fee": {
+                    "example": 100,
+                    "type": "integer"
+                },
+                "sender": {
+                    "example": "03abc...",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "example": "2024-01-01T12:00:00.000Z",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.QuoteEntry": {
+            "description": "Quote for one recipient in batch",
+            "properties": {
+                "deliveryFee": {
+                    "example": 10,
+                    "type": "integer"
+                },
+                "messageBox": {
+                    "example": "inbox",
+                    "type": "string"
+                },
+                "recipient": {
+                    "example": "03abc...",
+                    "type": "string"
+                },
+                "recipientFee": {
+                    "example": 100,
+                    "type": "integer"
+                },
+                "status": {
+                    "example": "payment_required",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.QuoteMultiResponse": {
+            "description": "Response containing quotes for multiple recipients",
+            "properties": {
+                "blockedRecipients": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "description": {
+                    "example": "Message delivery quotes generated for 2 recipients.",
+                    "type": "string"
+                },
+                "quotesByRecipient": {
+                    "items": {
+                        "$ref": "#/definitions/handlers.QuoteEntry"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                },
+                "totals": {
+                    "$ref": "#/definitions/handlers.QuoteTotals"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.QuoteSingle": {
+            "description": "Quote for single recipient",
+            "properties": {
+                "deliveryFee": {
+                    "example": 10,
+                    "type": "integer"
+                },
+                "recipientFee": {
+                    "example": 100,
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.QuoteSingleResponse": {
+            "description": "Response containing quote for single recipient",
+            "properties": {
+                "description": {
+                    "example": "Message delivery quote generated.",
+                    "type": "string"
+                },
+                "quote": {
+                    "$ref": "#/definitions/handlers.QuoteSingle"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.QuoteTotals": {
+            "description": "Totals for batch quote",
+            "properties": {
+                "deliveryFees": {
+                    "example": 20,
+                    "type": "integer"
+                },
+                "recipientFees": {
+                    "example": 200,
+                    "type": "integer"
+                },
+                "totalForPayableRecipients": {
+                    "example": 220,
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.RegisterDeviceRequest": {
+            "description": "Request to register a device for push notifications",
+            "properties": {
+                "deviceId": {
+                    "type": "string"
+                },
+                "fcmToken": {
+                    "type": "string"
+                },
+                "platform": {
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.RegisterDeviceResponse": {
+            "description": "Response after registering a device",
+            "properties": {
+                "deviceId": {
+                    "description": "Registration ID, stable across re-registrations of the same token. Not\nthe request's deviceId string: the name follows the TS reference server.",
+                    "example": 1,
+                    "type": "integer"
+                },
+                "message": {
+                    "example": "Device registered successfully for push notifications",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.SendMessageRequest": {
+            "type": "object"
+        },
+        "handlers.SendMessageResponse": {
+            "description": "Response after sending message(s)",
+            "properties": {
+                "message": {
+                    "example": "Your message has been sent to 1 recipient(s).",
+                    "type": "string"
+                },
+                "results": {
+                    "items": {
+                        "$ref": "#/definitions/handlers.SendMessageResult"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.SendMessageResult": {
+            "description": "Result for a single recipient",
+            "properties": {
+                "messageId": {
+                    "example": "msg-123",
+                    "type": "string"
+                },
+                "recipient": {
+                    "example": "03abc...",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.SetPermissionRequest": {
+            "description": "Request to set a permission",
+            "properties": {
+                "messageBox": {
+                    "example": "inbox",
+                    "type": "string"
+                },
+                "recipientFee": {
+                    "example": 100,
+                    "type": "integer"
+                },
+                "sender": {
+                    "example": "03abc...",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.SetPermissionResponse": {
+            "description": "Response after setting a permission",
+            "properties": {
+                "description": {
+                    "example": "Messages from sender to inbox now require 100 satoshis.",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.SuccessResponse": {
+            "description": "Simple success response",
+            "properties": {
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.UnregisterDeviceRequest": {
+            "description": "Request to remove the caller's registration of an FCM token",
+            "properties": {
+                "fcmToken": {
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "handlers.UnregisterDeviceResponse": {
+            "description": "Response after unregistering a device",
+            "properties": {
+                "message": {
+                    "example": "Device unregistered from push notifications",
+                    "type": "string"
+                },
+                "status": {
+                    "example": "success",
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        }
     },
     "host": "localhost:8080",
-    "basePath": "/",
+    "info": {
+        "contact": {},
+        "description": "API for message delivery, retrieval, acknowledgement and permissions. Uses BRC-31/BRC-104 mutual authentication.",
+        "title": "MessageBox Server API",
+        "version": "1.0.0"
+    },
     "paths": {
         "/.well-known/bsvalias": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Paymail capability discovery",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": true,
+                            "type": "object"
                         }
                     }
-                }
+                },
+                "summary": "Paymail capability discovery",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/acknowledgeMessage": {
             "post": {
-                "security": [
-                    {
-                        "BSVAuth": []
-                    }
-                ],
-                "description": "Removes acknowledged messages from the database for the authenticated identity. Used after a client has received and processed messages.",
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Messages"
-                ],
-                "summary": "Acknowledge receipt of messages",
+                "description": "Removes acknowledged messages from the database for the authenticated identity. Used after a client has received and processed messages.",
                 "parameters": [
                     {
                         "description": "Message IDs to acknowledge",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.AcknowledgeMessageRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -83,45 +632,45 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/admin/handle/release": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
+                "summary": "Acknowledge receipt of messages",
+                "tags": [
+                    "Messages"
+                ]
+            }
+        },
+        "/admin/handle/release": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Operator release of a handle (lost keys)",
                 "parameters": [
                     {
                         "description": "Handle to release",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.AdminReleaseRequest"
                         }
                     }
                 ],
+                "produces": [
+                    "application/json"
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
                             "additionalProperties": {
                                 "type": "string"
-                            }
+                            },
+                            "type": "object"
                         }
                     },
                     "400": {
@@ -148,7 +697,16 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
+                },
+                "security": [
+                    {
+                        "BSVAuth": []
+                    }
+                ],
+                "summary": "Operator release of a handle (lost keys)",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/api/handle": {
@@ -156,38 +714,34 @@
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Register, update or release a handle",
                 "parameters": [
                     {
                         "description": "Self-signed profile certificate",
-                        "name": "certificate",
                         "in": "body",
+                        "name": "certificate",
                         "required": true,
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": true,
+                            "type": "object"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": true,
+                            "type": "object"
                         }
                     },
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": true,
+                            "type": "object"
                         }
                     },
                     "400": {
@@ -202,26 +756,26 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
+                },
+                "summary": "Register, update or release a handle",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/api/handle/available/{handle}": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Check whether a handle can be registered",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Handle",
-                        "name": "handle",
                         "in": "path",
-                        "required": true
+                        "name": "handle",
+                        "required": true,
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -230,65 +784,65 @@
                             "$ref": "#/definitions/handlers.AvailabilityResponse"
                         }
                     }
-                }
+                },
+                "summary": "Check whether a handle can be registered",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/api/handle/{query}": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Search handles (capability 0ace65da5987)",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Partial or full handle, optionally @domain",
-                        "name": "query",
                         "in": "path",
-                        "required": true
+                        "name": "query",
+                        "required": true,
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "array",
                             "items": {
-                                "type": "object",
-                                "additionalProperties": true
-                            }
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            "type": "array"
                         }
                     }
-                }
+                },
+                "summary": "Search handles (capability 0ace65da5987)",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/api/identityKey/{pubkey}": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "lookup"
-                ],
-                "summary": "Reverse lookup (capability 43dcf83ddc5f)",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Compressed public key, hex",
-                        "name": "pubkey",
                         "in": "path",
-                        "required": true
+                        "name": "pubkey",
+                        "required": true,
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": true,
+                            "type": "object"
                         }
                     },
                     "404": {
@@ -297,24 +851,19 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
+                },
+                "summary": "Reverse lookup (capability 43dcf83ddc5f)",
+                "tags": [
+                    "lookup"
+                ]
             }
         },
         "/devices": {
             "get": {
-                "security": [
-                    {
-                        "BSVAuth": []
-                    }
-                ],
                 "description": "Returns all devices registered for push notifications for the authenticated identity.",
                 "produces": [
                     "application/json"
                 ],
-                "tags": [
-                    "Devices"
-                ],
-                "summary": "List registered devices",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -334,37 +883,37 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/listMessages": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Returns one deterministic, bounded page of stored messages for the specified messageBox belonging to the authenticated identity, most recently paginated with limit/offset (skip is a compatibility alias for offset) and optionally filtered to a single messageId. If the box does not exist or has no messages, an empty page is returned. Existing clients that send only messageBox get the first page of up to the server's default limit.",
+                "summary": "List registered devices",
+                "tags": [
+                    "Devices"
+                ]
+            }
+        },
+        "/listMessages": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Messages"
-                ],
-                "summary": "Retrieve messages from a message box",
+                "description": "Returns one deterministic, bounded page of stored messages for the specified messageBox belonging to the authenticated identity, most recently paginated with limit/offset (skip is a compatibility alias for offset) and optionally filtered to a single messageId. If the box does not exist or has no messages, an empty page is returned. Existing clients that send only messageBox get the first page of up to the server's default limit.",
                 "parameters": [
                     {
                         "description": "Message box to list messages from, with optional pagination",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.ListMessagesRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -397,38 +946,38 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/permissions/get": {
-            "get": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Retrieves the permission setting for a specific sender or box-wide default for the authenticated identity.",
-                "produces": [
-                    "application/json"
-                ],
+                "summary": "Retrieve messages from a message box",
                 "tags": [
-                    "Permissions"
-                ],
-                "summary": "Get a message permission",
+                    "Messages"
+                ]
+            }
+        },
+        "/permissions/get": {
+            "get": {
+                "description": "Retrieves the permission setting for a specific sender or box-wide default for the authenticated identity.",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Name of the message box",
-                        "name": "messageBox",
                         "in": "query",
-                        "required": true
+                        "name": "messageBox",
+                        "required": true,
+                        "type": "string"
                     },
                     {
-                        "type": "string",
                         "description": "Sender's public key (omit for box-wide setting)",
+                        "in": "query",
                         "name": "sender",
-                        "in": "query"
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -455,49 +1004,49 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/permissions/list": {
-            "get": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Returns all permission settings for the authenticated identity, optionally filtered by message box.",
-                "produces": [
-                    "application/json"
-                ],
+                "summary": "Get a message permission",
                 "tags": [
                     "Permissions"
-                ],
-                "summary": "List message permissions",
+                ]
+            }
+        },
+        "/permissions/list": {
+            "get": {
+                "description": "Returns all permission settings for the authenticated identity, optionally filtered by message box.",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Filter by message box name",
+                        "in": "query",
                         "name": "messageBox",
-                        "in": "query"
+                        "type": "string"
                     },
                     {
-                        "type": "integer",
                         "description": "Maximum number of results (1-1000, default 100)",
+                        "in": "query",
                         "name": "limit",
-                        "in": "query"
+                        "type": "integer"
                     },
                     {
-                        "type": "integer",
                         "description": "Number of results to skip (default 0)",
+                        "in": "query",
                         "name": "offset",
-                        "in": "query"
+                        "type": "integer"
                     },
                     {
-                        "type": "string",
                         "description": "Sort order: 'asc' or 'desc' (default 'desc')",
+                        "in": "query",
                         "name": "createdAtOrder",
-                        "in": "query"
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -524,39 +1073,39 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/permissions/quote": {
-            "get": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Returns fee information for sending a message to one or more recipients. Single recipient returns QuoteSingleResponse, multiple recipients returns QuoteMultiResponse.",
-                "produces": [
-                    "application/json"
-                ],
+                "summary": "List message permissions",
                 "tags": [
                     "Permissions"
-                ],
-                "summary": "Get a delivery quote",
+                ]
+            }
+        },
+        "/permissions/quote": {
+            "get": {
+                "description": "Returns fee information for sending a message to one or more recipients. Single recipient returns QuoteSingleResponse, multiple recipients returns QuoteMultiResponse.",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Recipient public key (can be repeated for multiple recipients)",
-                        "name": "recipient",
                         "in": "query",
-                        "required": true
+                        "name": "recipient",
+                        "required": true,
+                        "type": "string"
                     },
                     {
-                        "type": "string",
                         "description": "Name of the message box",
-                        "name": "messageBox",
                         "in": "query",
-                        "required": true
+                        "name": "messageBox",
+                        "required": true,
+                        "type": "string"
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -583,37 +1132,37 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/permissions/set": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Sets fee requirements for receiving messages. Use recipientFee=0 for free, recipientFee=-1 to block, or a positive value for required payment in satoshis. Omit sender for box-wide defaults.",
+                "summary": "Get a delivery quote",
+                "tags": [
+                    "Permissions"
+                ]
+            }
+        },
+        "/permissions/set": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Permissions"
-                ],
-                "summary": "Set a message permission",
+                "description": "Sets fee requirements for receiving messages. Use recipientFee=0 for free, recipientFee=-1 to block, or a positive value for required payment in satoshis. Omit sender for box-wide defaults.",
                 "parameters": [
                     {
                         "description": "Permission settings",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.SetPermissionRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -640,37 +1189,37 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/registerDevice": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Registers a device with an FCM token for receiving push notifications. Supports iOS, Android, and web platforms. A registration belongs to the authenticated identity and the token together: several identities can register the same token (a wallet with several profiles on one install), and each is pushed to separately. Registering again is idempotent and returns the same deviceId.",
+                "summary": "Set a message permission",
+                "tags": [
+                    "Permissions"
+                ]
+            }
+        },
+        "/registerDevice": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Devices"
-                ],
-                "summary": "Register a device for push notifications",
+                "description": "Registers a device with an FCM token for receiving push notifications. Supports iOS, Android, and web platforms. A registration belongs to the authenticated identity and the token together: several identities can register the same token (a wallet with several profiles on one install), and each is pushed to separately. Registering again is idempotent and returns the same deviceId.",
                 "parameters": [
                     {
                         "description": "Device registration details",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.RegisterDeviceRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -697,37 +1246,37 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/sendMessage": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Inserts a message into the target recipient's message box. Supports single or multiple recipients. Payment may be required depending on recipient's fee settings.",
+                "summary": "Register a device for push notifications",
+                "tags": [
+                    "Devices"
+                ]
+            }
+        },
+        "/sendMessage": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Messages"
-                ],
-                "summary": "Send a message to recipient(s)",
+                "description": "Inserts a message into the target recipient's message box. Supports single or multiple recipients. Payment may be required depending on recipient's fee settings.",
                 "parameters": [
                     {
                         "description": "Message to send",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.SendMessageRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -760,37 +1309,37 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/unregisterDevice": {
-            "post": {
+                },
                 "security": [
                     {
                         "BSVAuth": []
                     }
                 ],
-                "description": "Removes the authenticated identity's registration of an FCM token, and only that one: other identities that registered the same token keep theirs. Idempotent: it succeeds whether or not the identity had registered the token.",
+                "summary": "Send a message to recipient(s)",
+                "tags": [
+                    "Messages"
+                ]
+            }
+        },
+        "/unregisterDevice": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Devices"
-                ],
-                "summary": "Unregister a device from push notifications",
+                "description": "Removes the authenticated identity's registration of an FCM token, and only that one: other identities that registered the same token keep theirs. Idempotent: it succeeds whether or not the identity had registered the token.",
                 "parameters": [
                     {
                         "description": "Token to unregister",
-                        "name": "request",
                         "in": "body",
+                        "name": "request",
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/handlers.UnregisterDeviceRequest"
                         }
                     }
+                ],
+                "produces": [
+                    "application/json"
                 ],
                 "responses": {
                     "200": {
@@ -817,575 +1366,26 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
-                }
-            }
-        }
-    },
-    "definitions": {
-        "handlers.AcknowledgeMessageRequest": {
-            "description": "Request to acknowledge (delete) messages",
-            "type": "object",
-            "properties": {
-                "messageIds": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
+                },
+                "security": [
+                    {
+                        "BSVAuth": []
                     }
-                }
-            }
-        },
-        "handlers.AdminReleaseRequest": {
-            "type": "object",
-            "properties": {
-                "handle": {
-                    "type": "string"
-                },
-                "skipCooldown": {
-                    "description": "SkipCooldown defaults to true: the usual case is a user who lost their\nkey and, after out-of-band verification, re-registers with a new one.\nOnly an active handle can be released; a handle already tombstoned by its\nowner answers 404, and its cooldown cannot be lifted from here (the\nprevious owner may reclaim it inside the cooldown regardless).",
-                    "type": "boolean"
-                }
-            }
-        },
-        "handlers.AvailabilityResponse": {
-            "type": "object",
-            "properties": {
-                "available": {
-                    "type": "boolean"
-                },
-                "reason": {
-                    "description": "taken | too_similar | reserved | invalid | cooldown | stale",
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.DeliveryBlockedError": {
-            "description": "Error response when delivery is blocked for some recipients",
-            "type": "object",
-            "properties": {
-                "blockedRecipients": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "code": {
-                    "type": "string",
-                    "example": "ERR_DELIVERY_BLOCKED"
-                },
-                "description": {
-                    "type": "string",
-                    "example": "Blocked recipients: 03abc..."
-                },
-                "status": {
-                    "type": "string",
-                    "example": "error"
-                }
-            }
-        },
-        "handlers.DeviceOut": {
-            "description": "Device registration object",
-            "type": "object",
-            "properties": {
-                "active": {
-                    "type": "boolean",
-                    "example": true
-                },
-                "createdAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                },
-                "deviceId": {
-                    "type": "string",
-                    "example": "device-abc"
-                },
-                "fcmToken": {
-                    "type": "string",
-                    "example": "...abc123"
-                },
-                "id": {
-                    "type": "integer",
-                    "example": 1
-                },
-                "lastUsed": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                },
-                "platform": {
-                    "type": "string",
-                    "example": "ios"
-                },
-                "updatedAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                }
-            }
-        },
-        "handlers.ErrorResponse": {
-            "description": "Error response with status, code, and description",
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "example": "ERR_INVALID_REQUEST"
-                },
-                "description": {
-                    "type": "string",
-                    "example": "Invalid request parameters"
-                },
-                "status": {
-                    "type": "string",
-                    "example": "error"
-                }
-            }
-        },
-        "handlers.GetPermissionResponse": {
-            "description": "Response containing permission details",
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "example": "Permission setting found."
-                },
-                "permission": {
-                    "$ref": "#/definitions/handlers.PermissionDetail"
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.ListDevicesResponse": {
-            "description": "Response containing list of devices",
-            "type": "object",
-            "properties": {
-                "devices": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.DeviceOut"
-                    }
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.ListMessagesRequest": {
-            "description": "Request to list messages from a message box",
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "description": "Limit caps the number of messages returned; defaults to the server's\nconfigured LIST_DEFAULT_LIMIT.",
-                    "type": "integer",
-                    "example": 100
-                },
-                "messageBox": {
-                    "type": "string",
-                    "example": "inbox"
-                },
-                "messageId": {
-                    "description": "MessageID, if given, restricts the page to the single message with this\nexact ID (still subject to Limit/Offset).",
-                    "type": "string",
-                    "example": "msg-123"
-                },
-                "offset": {
-                    "description": "Offset skips this many matching messages before the returned page.",
-                    "type": "integer",
-                    "example": 0
-                },
-                "skip": {
-                    "description": "Skip is a compatibility alias for Offset; if both are given they must match.",
-                    "type": "integer",
-                    "example": 0
-                }
-            }
-        },
-        "handlers.ListMessagesResponse": {
-            "description": "Response containing a page of messages plus pagination state",
-            "type": "object",
-            "properties": {
-                "hasMore": {
-                    "description": "HasMore reports whether at least one further matching message exists\nbeyond this page.",
-                    "type": "boolean",
-                    "example": false
-                },
-                "limit": {
-                    "description": "Limit is the page size that was applied (the request's limit, or the\nserver's configured default when none was given).",
-                    "type": "integer",
-                    "example": 1000
-                },
-                "messages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.MessageOut"
-                    }
-                },
-                "nextOffset": {
-                    "description": "NextOffset is Offset plus the number of messages actually returned; pass\nit as the next request's offset to continue paging.",
-                    "type": "integer",
-                    "example": 1000
-                },
-                "offset": {
-                    "description": "Offset is the request's offset (or skip), echoed back.",
-                    "type": "integer",
-                    "example": 0
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.ListPermissionsResponse": {
-            "description": "Response containing list of permissions",
-            "type": "object",
-            "properties": {
-                "permissions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.PermissionDetailList"
-                    }
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                },
-                "totalCount": {
-                    "type": "integer",
-                    "example": 10
-                }
-            }
-        },
-        "handlers.MessageOut": {
-            "description": "Message object returned by listMessages",
-            "type": "object",
-            "properties": {
-                "body": {
-                    "type": "string",
-                    "example": "{\"text\":\"Hello\"}"
-                },
-                "createdAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                },
-                "messageId": {
-                    "type": "string",
-                    "example": "abc123"
-                },
-                "sender": {
-                    "type": "string",
-                    "example": "03abc..."
-                },
-                "updatedAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                }
-            }
-        },
-        "handlers.PermissionDetail": {
-            "description": "Permission details (camelCase for getPermission endpoint)",
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                },
-                "messageBox": {
-                    "type": "string",
-                    "example": "inbox"
-                },
-                "recipientFee": {
-                    "type": "integer",
-                    "example": 100
-                },
-                "sender": {
-                    "type": "string",
-                    "example": "03abc..."
-                },
-                "status": {
-                    "type": "string",
-                    "example": "payment_required"
-                },
-                "updatedAt": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                }
-            }
-        },
-        "handlers.PermissionDetailList": {
-            "description": "Permission details (snake_case for listPermissions endpoint)",
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                },
-                "message_box": {
-                    "type": "string",
-                    "example": "inbox"
-                },
-                "recipient_fee": {
-                    "type": "integer",
-                    "example": 100
-                },
-                "sender": {
-                    "type": "string",
-                    "example": "03abc..."
-                },
-                "updated_at": {
-                    "type": "string",
-                    "example": "2024-01-01T12:00:00.000Z"
-                }
-            }
-        },
-        "handlers.QuoteEntry": {
-            "description": "Quote for one recipient in batch",
-            "type": "object",
-            "properties": {
-                "deliveryFee": {
-                    "type": "integer",
-                    "example": 10
-                },
-                "messageBox": {
-                    "type": "string",
-                    "example": "inbox"
-                },
-                "recipient": {
-                    "type": "string",
-                    "example": "03abc..."
-                },
-                "recipientFee": {
-                    "type": "integer",
-                    "example": 100
-                },
-                "status": {
-                    "type": "string",
-                    "example": "payment_required"
-                }
-            }
-        },
-        "handlers.QuoteMultiResponse": {
-            "description": "Response containing quotes for multiple recipients",
-            "type": "object",
-            "properties": {
-                "blockedRecipients": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "description": {
-                    "type": "string",
-                    "example": "Message delivery quotes generated for 2 recipients."
-                },
-                "quotesByRecipient": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.QuoteEntry"
-                    }
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                },
-                "totals": {
-                    "$ref": "#/definitions/handlers.QuoteTotals"
-                }
-            }
-        },
-        "handlers.QuoteSingle": {
-            "description": "Quote for single recipient",
-            "type": "object",
-            "properties": {
-                "deliveryFee": {
-                    "type": "integer",
-                    "example": 10
-                },
-                "recipientFee": {
-                    "type": "integer",
-                    "example": 100
-                }
-            }
-        },
-        "handlers.QuoteSingleResponse": {
-            "description": "Response containing quote for single recipient",
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "example": "Message delivery quote generated."
-                },
-                "quote": {
-                    "$ref": "#/definitions/handlers.QuoteSingle"
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.QuoteTotals": {
-            "description": "Totals for batch quote",
-            "type": "object",
-            "properties": {
-                "deliveryFees": {
-                    "type": "integer",
-                    "example": 20
-                },
-                "recipientFees": {
-                    "type": "integer",
-                    "example": 200
-                },
-                "totalForPayableRecipients": {
-                    "type": "integer",
-                    "example": 220
-                }
-            }
-        },
-        "handlers.RegisterDeviceRequest": {
-            "description": "Request to register a device for push notifications",
-            "type": "object",
-            "properties": {
-                "deviceId": {
-                    "type": "string"
-                },
-                "fcmToken": {
-                    "type": "string"
-                },
-                "platform": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.RegisterDeviceResponse": {
-            "description": "Response after registering a device",
-            "type": "object",
-            "properties": {
-                "deviceId": {
-                    "description": "Registration ID, stable across re-registrations of the same token. Not\nthe request's deviceId string: the name follows the TS reference server.",
-                    "type": "integer",
-                    "example": 1
-                },
-                "message": {
-                    "type": "string",
-                    "example": "Device registered successfully for push notifications"
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.SendMessageRequest": {
-            "type": "object"
-        },
-        "handlers.SendMessageResponse": {
-            "description": "Response after sending message(s)",
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "example": "Your message has been sent to 1 recipient(s)."
-                },
-                "results": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.SendMessageResult"
-                    }
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.SendMessageResult": {
-            "description": "Result for a single recipient",
-            "type": "object",
-            "properties": {
-                "messageId": {
-                    "type": "string",
-                    "example": "msg-123"
-                },
-                "recipient": {
-                    "type": "string",
-                    "example": "03abc..."
-                }
-            }
-        },
-        "handlers.SetPermissionRequest": {
-            "description": "Request to set a permission",
-            "type": "object",
-            "properties": {
-                "messageBox": {
-                    "type": "string",
-                    "example": "inbox"
-                },
-                "recipientFee": {
-                    "type": "integer",
-                    "example": 100
-                },
-                "sender": {
-                    "type": "string",
-                    "example": "03abc..."
-                }
-            }
-        },
-        "handlers.SetPermissionResponse": {
-            "description": "Response after setting a permission",
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "example": "Messages from sender to inbox now require 100 satoshis."
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.SuccessResponse": {
-            "description": "Simple success response",
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
-        "handlers.UnregisterDeviceRequest": {
-            "description": "Request to remove the caller's registration of an FCM token",
-            "type": "object",
-            "properties": {
-                "fcmToken": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.UnregisterDeviceResponse": {
-            "description": "Response after unregistering a device",
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "example": "Device unregistered from push notifications"
-                },
-                "status": {
-                    "type": "string",
-                    "example": "success"
-                }
+                ],
+                "summary": "Unregister a device from push notifications",
+                "tags": [
+                    "Devices"
+                ]
             }
         }
     },
     "securityDefinitions": {
         "BSVAuth": {
             "description": "BRC-31/BRC-104 mutual authentication. Requires multiple x-bsv-auth-* headers (identity-key, nonce, signature, etc.)",
-            "type": "apiKey",
+            "in": "header",
             "name": "x-bsv-auth-identity-key",
-            "in": "header"
+            "type": "apiKey"
         }
-    }
+    },
+    "swagger": "2.0"
 }
