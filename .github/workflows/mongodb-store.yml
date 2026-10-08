@@ -1,0 +1,61 @@
+# ------------------------------------------------------------------------------------
+#  MongoDB Store Integration Tests
+#
+#  Purpose: Run the MongoDB storage backend (pkg/storage/mongostore) against a live
+#  MongoDB service container.
+#
+#  The mongostore tests, including the storagetest conformance suite, skip when
+#  MONGO_TEST_URI is unset, so the GoFortress test suite (which has no MongoDB
+#  service) never exercises them. This workflow provisions mongo and sets the URI
+#  so they actually run.
+# ------------------------------------------------------------------------------------
+
+name: MongoDB Store
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Security: Restrict default permissions (jobs must explicitly request what they need)
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mongodb-store:
+    name: MongoDB store tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      mongo:
+        image: mongo:8.2
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run MongoDB store tests
+        env:
+          MONGO_TEST_URI: mongodb://localhost:27017
+        run: go test -race -count=1 ./pkg/storage/mongostore/...
