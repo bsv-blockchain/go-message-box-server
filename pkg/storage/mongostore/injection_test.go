@@ -64,9 +64,9 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 	if err := s.SetPermission(ctx, realRecipient, nil, "inbox", storage.FeeBlocked); err != nil {
 		t.Fatal(err)
 	}
-	realDeviceID, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"})
-	if err != nil {
-		t.Fatal(err)
+	realDeviceID, registerErr := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: realRecipient, FCMToken: "tok-1"})
+	if registerErr != nil {
+		t.Fatal(registerErr)
 	}
 
 	for _, payload := range payloads {
@@ -193,12 +193,12 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 			if id == realDeviceID {
 				t.Errorf("payload got the real device's id %d", id)
 			}
-			real, err := s.ListDevices(ctx, realRecipient)
+			realDevices, err := s.ListDevices(ctx, realRecipient)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(real) != 1 || real[0].FCMToken != "tok-1" || real[0].ID != realDeviceID {
-				t.Errorf("real recipient's devices = %+v, want only tok-1 with id %d", real, realDeviceID)
+			if len(realDevices) != 1 || realDevices[0].FCMToken != "tok-1" || realDevices[0].ID != realDeviceID {
+				t.Errorf("real recipient's devices = %+v, want only tok-1 with id %d", realDevices, realDeviceID)
 			}
 			theirs, err := s.ListDevices(ctx, attacker)
 			if err != nil {
@@ -224,12 +224,12 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 				if err := call(); err != nil {
 					t.Fatalf("%s: %v", name, err)
 				}
-				real, err := s.ListDevices(ctx, realRecipient)
+				realDevices, err := s.ListDevices(ctx, realRecipient)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(real) != 1 || real[0].FCMToken != "tok-1" || real[0].ID != realDeviceID {
-					t.Errorf("%s payload removed the real device: have %+v, want only tok-1 with id %d", name, real, realDeviceID)
+				if len(realDevices) != 1 || realDevices[0].FCMToken != "tok-1" || realDevices[0].ID != realDeviceID {
+					t.Errorf("%s payload removed the real device: have %+v, want only tok-1 with id %d", name, realDevices, realDeviceID)
 				}
 			}
 		})

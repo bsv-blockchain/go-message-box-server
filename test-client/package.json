@@ -11,12 +11,12 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@bsv/message-box-client": "^2.0.1",
-    "@bsv/sdk": "^2.5.0",
+    "@bsv/message-box-client": "^2.5.4",
+    "@bsv/sdk": "^2.8.11",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.2.3",
-    "jest": "^30.2.0",
-    "ts-jest": "^29.4.6",
+    "@types/node": "^25.9.8",
+    "jest": "^30.5.2",
+    "ts-jest": "^29.4.14",
     "typescript": "^5.9.3"
   }
 }

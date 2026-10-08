@@ -47,7 +47,7 @@ func TestSkeleton(t *testing.T) {
 	}
 }
 
-// Skeleton folds, it does not sanitise: metacharacters survive it, so callers
+// Skeleton folds, it does not sanitize: metacharacters survive it, so callers
 // that build a regex from a skeleton must escape it themselves.
 func TestSkeletonKeepsRegexMetacharacters(t *testing.T) {
 	cases := map[string]string{
@@ -75,8 +75,10 @@ func TestValidate(t *testing.T) {
 	// The last three are non-ASCII look-alikes of "admin"; the regex is
 	// ASCII-only, so they are rejected before the reserved check ever folds
 	// them (Skeleton("admİn") is "admln", the skeleton of "admin").
-	invalid := []string{"", "ab", ".abc", "abc.", "Deggen", "deg gen", "deg+gen", "dég", "a23456789012345678901234567890bcd",
-		"admın", "admİn", "ＡＤＭＩＮ"}
+	invalid := []string{
+		"", "ab", ".abc", "abc.", "Deggen", "deg gen", "deg+gen", "dég", "a23456789012345678901234567890bcd",
+		"admın", "admİn", "ＡＤＭＩＮ",
+	}
 	for _, h := range invalid {
 		if err := Validate(h); !errors.Is(err, ErrInvalidHandle) {
 			t.Errorf("Validate(%q) = %v, want ErrInvalidHandle", h, err)

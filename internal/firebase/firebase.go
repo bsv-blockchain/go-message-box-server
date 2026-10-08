@@ -1,3 +1,5 @@
+// Package firebase delivers push notifications for new messages through
+// Firebase Cloud Messaging (FCM) to the devices registered for a recipient.
 package firebase
 
 import (
@@ -14,7 +16,7 @@ import (
 var (
 	client     *messaging.Client
 	clientOnce sync.Once
-	initErr    error
+	errInit    error
 )
 
 // Config holds Firebase configuration.
@@ -43,7 +45,7 @@ func Initialize(cfg Config) error {
 		} else if cfg.ServiceAccountPath != "" {
 			opt = option.WithAuthCredentialsFile(option.ServiceAccount, cfg.ServiceAccountPath)
 		} else {
-			initErr = fmt.Errorf("firebase: no credentials provided (need FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH)")
+			errInit = fmt.Errorf("firebase: no credentials provided (need FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH)")
 			return
 		}
 
@@ -51,18 +53,18 @@ func Initialize(cfg Config) error {
 			ProjectID: cfg.ProjectID,
 		}, opt)
 		if err != nil {
-			initErr = err
+			errInit = err
 			return
 		}
 
 		client, err = app.Messaging(ctx)
 		if err != nil {
-			initErr = fmt.Errorf("firebase: failed to get messaging client: %w", err)
+			errInit = fmt.Errorf("firebase: failed to get messaging client: %w", err)
 			return
 		}
 	})
 
-	return initErr
+	return errInit
 }
 
 // IsEnabled returns true if Firebase is configured and initialized.

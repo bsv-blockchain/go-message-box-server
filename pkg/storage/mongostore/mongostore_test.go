@@ -24,7 +24,7 @@ func newMongoBare(t *testing.T, uri, database string) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 
 	if err := s.db.Drop(ctx); err != nil {
 		t.Fatalf("drop database: %v", err)
@@ -152,15 +152,15 @@ func TestHandleTimesTruncateToMilliseconds(t *testing.T) {
 		t.Errorf("stored issuedAt = %v, want %v", rec.IssuedAt, want)
 	}
 	// The same certificate again is the one the row already holds.
-	if got, err := s.ClaimHandle(ctx, c); err != nil || got != storage.ClaimUnchanged {
-		t.Fatalf("replayed ClaimHandle = %v, %v; want %v, nil", got, err, storage.ClaimUnchanged)
+	if got, replayErr := s.ClaimHandle(ctx, c); replayErr != nil || got != storage.ClaimUnchanged {
+		t.Fatalf("replayed ClaimHandle = %v, %v; want %v, nil", got, replayErr, storage.ClaimUnchanged)
 	}
 
 	key := owner
 	relIssued := issued.Add(time.Hour)
 	cooldown := relIssued.Add(24 * time.Hour)
 	keptIssued, keptCooldown := relIssued, cooldown
-	if err := s.ReleaseHandle(ctx, storage.HandleRelease{
+	if err = s.ReleaseHandle(ctx, storage.HandleRelease{
 		Handle: "deggen", Owner: &key, IssuedAt: &relIssued,
 		ReleasedBy: "owner", CooldownUntil: &cooldown, Now: relIssued,
 	}); err != nil {
@@ -227,8 +227,8 @@ func TestRegisterDevice_BackfillsLegacyID(t *testing.T) {
 	if err != nil || again != id {
 		t.Fatalf("re-register = %d, %v; want %d, nil", again, err, id)
 	}
-	if fresh, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "new-tok"}); err != nil || fresh == id {
-		t.Fatalf("new token id = %d, %v; want one distinct from %d", fresh, err, id)
+	if fresh, freshErr := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "new-tok"}); freshErr != nil || fresh == id {
+		t.Fatalf("new token id = %d, %v; want one distinct from %d", fresh, freshErr, id)
 	}
 
 	devices, err := s.ListDevices(ctx, alice)
@@ -383,8 +383,8 @@ func TestEnsureSchema_MigratesLegacyDevices(t *testing.T) {
 	if err != nil || idA3 < 1 {
 		t.Fatalf("alice re-registers tok-a3 = %d, %v; want a backfilled id", idA3, err)
 	}
-	if again, err := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-a3"}); err != nil || again != idA3 {
-		t.Errorf("tok-a3 re-register = %d, %v; want %d", again, err, idA3)
+	if again, againErr := s.RegisterDevice(ctx, storage.NewDevice{IdentityKey: alice, FCMToken: "tok-a3"}); againErr != nil || again != idA3 {
+		t.Errorf("tok-a3 re-register = %d, %v; want %d", again, againErr, idA3)
 	}
 	if got := storedDevices(t, s); len(got) != len(legacy) {
 		t.Errorf("%d documents after re-registering, want the legacy ones adopted, not duplicated: %+v", len(got), got)

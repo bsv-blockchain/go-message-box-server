@@ -18,15 +18,15 @@ import (
 type emptyRegistry struct{}
 
 func (emptyRegistry) GetHandle(context.Context, string) (*mbstorage.HandleRecord, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // HandleStore contract: no record is (nil, nil)
 }
 
 func (emptyRegistry) GetHandleBySkeleton(context.Context, string) (*mbstorage.HandleRecord, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // HandleStore contract: no record is (nil, nil)
 }
 
 func (emptyRegistry) GetHandleByIdentityKey(context.Context, string) (*mbstorage.HandleRecord, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // HandleStore contract: no record is (nil, nil)
 }
 
 func (emptyRegistry) ClaimHandle(context.Context, mbstorage.HandleClaim) (mbstorage.ClaimResult, error) {
@@ -84,7 +84,7 @@ func TestLookupRegistry(t *testing.T) {
 	}
 	// On, but the opened backend carries no registry: refuse rather than mount
 	// routes with nothing behind them.
-	if _, err := lookupRegistry(lookupConfig("example.com", "sql"), noRegistry{}); err == nil {
+	if _, err = lookupRegistry(lookupConfig("example.com", "sql"), noRegistry{}); err == nil {
 		t.Error("a backend without a registry must be refused")
 	}
 	got, err = lookupRegistry(lookupConfig("example.com", "mongo"), emptyRegistry{})
@@ -114,7 +114,7 @@ func TestMountLookup_ServesThePublicRoutes(t *testing.T) {
 	get := func(path string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", path, nil))
 		return w
 	}
 	for _, path := range []string{
@@ -147,9 +147,9 @@ func TestMountLookup_ServesThePublicRoutes(t *testing.T) {
 	cfg.LookupRatePerMin = 1
 	limited := mountLookup(cfg, handlers.NewServer(nil, nil), emptyRegistry{})
 	first := httptest.NewRecorder()
-	limited.ServeHTTP(first, httptest.NewRequest("GET", "/.well-known/bsvalias", nil))
+	limited.ServeHTTP(first, httptest.NewRequestWithContext(t.Context(), "GET", "/.well-known/bsvalias", nil))
 	second := httptest.NewRecorder()
-	limited.ServeHTTP(second, httptest.NewRequest("GET", "/.well-known/bsvalias", nil))
+	limited.ServeHTTP(second, httptest.NewRequestWithContext(t.Context(), "GET", "/.well-known/bsvalias", nil))
 	if first.Code != http.StatusOK || second.Code != http.StatusTooManyRequests {
 		t.Errorf("rate limit = %d then %d, want 200 then 429", first.Code, second.Code)
 	}
@@ -167,7 +167,7 @@ func TestMountLookup_ClientIPHeader(t *testing.T) {
 
 	get := func(remoteAddr, headerValue string) *httptest.ResponseRecorder {
 		t.Helper()
-		r := httptest.NewRequest("GET", "/.well-known/bsvalias", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/.well-known/bsvalias", nil)
 		r.RemoteAddr = remoteAddr
 		if headerValue != "" {
 			r.Header.Set("CF-Connecting-IP", headerValue)

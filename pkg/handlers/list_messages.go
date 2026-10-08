@@ -254,11 +254,11 @@ func parseListPagination(limitRaw, offsetRaw, skipRaw json.RawMessage, cfg ListM
 // String(resources.listMaxLimit)`, and the offset equivalent), so the two
 // servers' ERR_INVALID_LIMIT/ERR_INVALID_OFFSET description text is
 // byte-for-byte identical for the same configuration.
-func boundDisplay(max int) string {
-	if max == -1 {
+func boundDisplay(bound int) string {
+	if bound == -1 {
 		return "the JavaScript safe-integer maximum"
 	}
-	return strconv.Itoa(max)
+	return strconv.Itoa(bound)
 }
 
 // jsonRawPresent reports whether raw holds a JSON value other than an absent
@@ -288,12 +288,12 @@ func decodeJSONValue(raw json.RawMessage) (present bool, value any) {
 // Number.isSafeInteger enforces and which boundedInteger mirrors.
 const safeIntegerLimit = 1<<53 - 1
 
-// boundedInteger reports whether v is a whole number within [min, max],
-// mirroring the TS reference server's isBoundedInteger. max == -1 means no
+// boundedInteger reports whether v is a whole number within [minValue, maxValue],
+// mirroring the TS reference server's isBoundedInteger. maxValue == -1 means no
 // upper bound. Only float64 (what encoding/json decodes a JSON number as into
 // an any) can ever satisfy it, matching Number.isSafeInteger's own rejection
 // of non-numbers.
-func boundedInteger(v any, min, max int) (int, bool) {
+func boundedInteger(v any, minValue, maxValue int) (int, bool) {
 	f, ok := v.(float64)
 	if !ok {
 		return 0, false
@@ -305,10 +305,10 @@ func boundedInteger(v any, min, max int) (int, bool) {
 		return 0, false
 	}
 	iv := int64(f)
-	if iv < int64(min) {
+	if iv < int64(minValue) {
 		return 0, false
 	}
-	if max != -1 && iv > int64(max) {
+	if maxValue != -1 && iv > int64(maxValue) {
 		return 0, false
 	}
 	return int(iv), true
@@ -375,7 +375,7 @@ func (s *Server) readMessagePage(ctx context.Context, recipient, messageBox stri
 	}
 
 	return ListMessagesResponse{
-		Status:     "success",
+		Status:     statusSuccess,
 		Messages:   out,
 		Limit:      pag.Limit,
 		Offset:     pag.Offset,

@@ -78,7 +78,7 @@ func TestParse_Valid(t *testing.T) {
 		t.Error("Released = true")
 	}
 	var round map[string]any
-	if err := json.Unmarshal([]byte(p.JSON), &round); err != nil {
+	if err = json.Unmarshal([]byte(p.JSON), &round); err != nil {
 		t.Fatalf("JSON not a certificate: %v", err)
 	}
 	if sig, _ := round["signature"].(string); sig == "" {
@@ -156,8 +156,16 @@ func TestParse_Released(t *testing.T) {
 		want  bool
 	}{
 		{"true", true},
-		{"false", false}, {"0", false}, {"1", false}, {"no", false}, {"yes", false},
-		{"TRUE", false}, {"True", false}, {" true", false}, {"true ", false}, {"", false},
+		{"false", false},
+		{"0", false},
+		{"1", false},
+		{"no", false},
+		{"yes", false},
+		{"TRUE", false},
+		{"True", false},
+		{" true", false},
+		{"true ", false},
+		{"", false},
 	} {
 		t.Run("released="+strconv.Quote(c.value), func(t *testing.T) {
 			body := certtest.Profile(t, key, "deggen", domain, now, map[string]string{"released": c.value})
@@ -246,7 +254,10 @@ func TestParse_Rejects(t *testing.T) {
 			t.Fatal(err)
 		}
 		mut(m)
-		b, _ := json.Marshal(m)
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return b
 	}
 	manyFields := map[string]string{}

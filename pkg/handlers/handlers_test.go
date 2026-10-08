@@ -30,11 +30,21 @@ func setupTestServer(t *testing.T) *Server {
 // store is covered by the conformance suite; the policy layer is covered
 // directly.
 
+// mustMarshal encodes v as JSON, failing the test if it cannot.
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return b
+}
+
 func TestListMessagesHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 
-	body, _ := json.Marshal(map[string]string{"messageBox": "inbox"})
-	req := httptest.NewRequest("POST", "/listMessages", bytes.NewReader(body))
+	body := mustMarshal(t, map[string]string{"messageBox": "inbox"})
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/listMessages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// No auth context -> should return 401
 
@@ -49,8 +59,8 @@ func TestListMessagesHandler_NoAuth(t *testing.T) {
 func TestAcknowledgeHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 
-	body, _ := json.Marshal(map[string]any{"messageIds": []string{"msg1"}})
-	req := httptest.NewRequest("POST", "/acknowledgeMessage", bytes.NewReader(body))
+	body := mustMarshal(t, map[string]any{"messageIds": []string{"msg1"}})
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/acknowledgeMessage", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -64,8 +74,8 @@ func TestAcknowledgeHandler_NoAuth(t *testing.T) {
 func TestRegisterDeviceHandler_NoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 
-	body, _ := json.Marshal(map[string]any{"fcmToken": "tok-1"})
-	req := httptest.NewRequest("POST", "/registerDevice", bytes.NewReader(body))
+	body := mustMarshal(t, map[string]any{"fcmToken": "tok-1"})
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/registerDevice", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()

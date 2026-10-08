@@ -30,6 +30,15 @@ const (
 	countersColl    = "counters"
 )
 
+// Field names shared by several collections.
+const (
+	fieldID          = "_id"
+	fieldIdentityKey = "identityKey"
+	fieldMessageBox  = "messageBox"
+	fieldRecipient   = "recipient"
+	fieldUpdatedAt   = "updatedAt"
+)
+
 // Store is a MongoDB-backed storage.Store.
 type Store struct {
 	client *mongo.Client
@@ -73,13 +82,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	indexes := map[string][]mongo.IndexModel{
 		messagesColl: {
 			// ListMessages: equality on recipient and messageBox, then the sort.
-			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}},
+			{Keys: bson.D{{Key: fieldRecipient, Value: 1}, {Key: fieldMessageBox, Value: 1}, {Key: "createdAt", Value: 1}, {Key: fieldID, Value: 1}}},
 		},
 		permissionsColl: {
 			// Uniqueness, including the box-wide row: Mongo indexes null as a
 			// value, so this covers a nil sender too.
 			{
-				Keys:    bson.D{{Key: "recipient", Value: 1}, {Key: "sender", Value: 1}, {Key: "messageBox", Value: 1}},
+				Keys:    bson.D{{Key: fieldRecipient, Value: 1}, {Key: "sender", Value: 1}, {Key: fieldMessageBox, Value: 1}},
 				Options: options.Index().SetUnique(true),
 			},
 			// ListPermissions sorts on messageBox, sender, createdAt after an
@@ -87,15 +96,15 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// order after the equality prefix or the whole page is sorted in
 			// memory, and one index per sort direction is needed because a
 			// compound index is only walkable forwards or fully reversed.
-			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: 1}}},
-			{Keys: bson.D{{Key: "recipient", Value: 1}, {Key: "messageBox", Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: -1}}},
+			{Keys: bson.D{{Key: fieldRecipient, Value: 1}, {Key: fieldMessageBox, Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: 1}}},
+			{Keys: bson.D{{Key: fieldRecipient, Value: 1}, {Key: fieldMessageBox, Value: 1}, {Key: "sender", Value: 1}, {Key: "createdAt", Value: -1}}},
 		},
 		devicesColl: {
 			// Serves both device queries: ListDevices matches identityKey and
 			// sorts on updatedAt, and ListActiveDevices adds an equality on
 			// active, which a later index field does not disturb. Putting active
 			// between the two would push ListDevices into an in-memory sort.
-			{Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "updatedAt", Value: -1}, {Key: "active", Value: 1}}},
+			{Keys: bson.D{{Key: fieldIdentityKey, Value: 1}, {Key: fieldUpdatedAt, Value: -1}, {Key: "active", Value: 1}}},
 			// A registration is one identity's hold on one token, and one install
 			// runs several identities on one token, so neither is unique alone.
 			// Partial, because a document written by a replica of the previous
@@ -104,7 +113,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// document per identity exist: a second device registered through an
 			// old replica mid-deploy would fail on a duplicate key.
 			{
-				Keys: bson.D{{Key: "identityKey", Value: 1}, {Key: "fcmToken", Value: 1}},
+				Keys: bson.D{{Key: fieldIdentityKey, Value: 1}, {Key: "fcmToken", Value: 1}},
 				Options: options.Index().SetUnique(true).
 					SetPartialFilterExpression(bson.D{{Key: "fcmToken", Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
@@ -123,9 +132,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// those must coexist — a plain unique index would index the missing
 			// field as null and let only one row be released at a time.
 			{
-				Keys: bson.D{{Key: "identityKey", Value: 1}},
+				Keys: bson.D{{Key: fieldIdentityKey, Value: 1}},
 				Options: options.Index().SetUnique(true).
-					SetPartialFilterExpression(bson.D{{Key: "identityKey", Value: bson.D{{Key: "$type", Value: "string"}}}}),
+					SetPartialFilterExpression(bson.D{{Key: fieldIdentityKey, Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
 		},
 	}
@@ -146,7 +155,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	// matching the SQL migration's ON CONFLICT DO NOTHING.
 	for _, f := range storage.DefaultDeliveryFees() {
 		_, err := s.db.Collection(feesColl).UpdateOne(ctx,
-			bson.M{"_id": f.MessageBox},
+			bson.M{fieldID: f.MessageBox},
 			bson.M{"$setOnInsert": bson.M{"deliveryFee": f.Fee}},
 			options.UpdateOne().SetUpsert(true),
 		)
@@ -190,8 +199,8 @@ func (s *Store) InsertMessage(ctx context.Context, m storage.NewMessage) error {
 // ListMessages implements storage.MessageStore.
 func (s *Store) ListMessages(ctx context.Context, recipient, messageBox string) ([]storage.Message, error) {
 	cur, err := s.db.Collection(messagesColl).Find(ctx,
-		bson.M{"recipient": recipient, "messageBox": messageBox},
-		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}),
+		bson.M{fieldRecipient: recipient, fieldMessageBox: messageBox},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: fieldID, Value: 1}}),
 	)
 	if err != nil {
 		return nil, err
@@ -232,14 +241,14 @@ func (s *Store) PageMessages(ctx context.Context, q storage.MessagePageQuery) ([
 		return nil, nil
 	}
 
-	filter := bson.M{"recipient": q.Recipient, "messageBox": q.MessageBox}
+	filter := bson.M{fieldRecipient: q.Recipient, fieldMessageBox: q.MessageBox}
 	if q.MessageID != nil {
-		filter["_id"] = *q.MessageID
+		filter[fieldID] = *q.MessageID
 	}
 
 	cur, err := s.db.Collection(messagesColl).Find(ctx, filter,
 		options.Find().
-			SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}).
+			SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: fieldID, Value: 1}}).
 			SetSkip(int64(q.Offset)).
 			SetLimit(int64(q.FetchLimit)),
 	)
@@ -271,7 +280,7 @@ func (s *Store) AcknowledgeMessages(ctx context.Context, recipient string, messa
 		return 0, nil
 	}
 	res, err := s.db.Collection(messagesColl).DeleteMany(ctx,
-		bson.M{"recipient": recipient, "_id": bson.M{"$in": messageIDs}},
+		bson.M{fieldRecipient: recipient, fieldID: bson.M{"$in": messageIDs}},
 	)
 	if err != nil {
 		return 0, err
@@ -286,7 +295,7 @@ func (s *Store) GetServerDeliveryFee(ctx context.Context, messageBox string) (in
 	var doc struct {
 		DeliveryFee int `bson:"deliveryFee"`
 	}
-	err := s.db.Collection(feesColl).FindOne(ctx, bson.M{"_id": messageBox}).Decode(&doc)
+	err := s.db.Collection(feesColl).FindOne(ctx, bson.M{fieldID: messageBox}).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return 0, nil
 	}
@@ -311,16 +320,16 @@ type permissionDoc struct {
 // as an explicit null, which Mongo indexes as a value — so unlike SQL there is
 // no NULL != NULL problem to work around.
 func permissionKey(recipient string, sender *string, messageBox string) bson.M {
-	return bson.M{"recipient": recipient, "sender": sender, "messageBox": messageBox}
+	return bson.M{fieldRecipient: recipient, "sender": sender, fieldMessageBox: messageBox}
 }
 
 // SetPermission implements storage.PermissionStore.
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	ts := now()
 	update := bson.M{
-		"$set": bson.M{"recipientFee": recipientFee, "updatedAt": ts},
+		"$set": bson.M{"recipientFee": recipientFee, fieldUpdatedAt: ts},
 		"$setOnInsert": bson.M{
-			"recipient": recipient, "sender": sender, "messageBox": messageBox, "createdAt": ts,
+			fieldRecipient: recipient, "sender": sender, fieldMessageBox: messageBox, "createdAt": ts,
 		},
 	}
 	upsert := func() error {
@@ -348,8 +357,8 @@ func (s *Store) SetPermissionIfAbsent(ctx context.Context, recipient string, sen
 	_, err := s.db.Collection(permissionsColl).UpdateOne(ctx,
 		permissionKey(recipient, sender, messageBox),
 		bson.M{"$setOnInsert": bson.M{
-			"recipient": recipient, "sender": sender, "messageBox": messageBox,
-			"recipientFee": recipientFee, "createdAt": ts, "updatedAt": ts,
+			fieldRecipient: recipient, "sender": sender, fieldMessageBox: messageBox,
+			"recipientFee": recipientFee, "createdAt": ts, fieldUpdatedAt: ts,
 		}},
 		options.UpdateOne().SetUpsert(true),
 	)
@@ -365,7 +374,7 @@ func (s *Store) GetPermission(ctx context.Context, recipient string, sender *str
 	var doc permissionDoc
 	err := s.db.Collection(permissionsColl).FindOne(ctx, permissionKey(recipient, sender, messageBox)).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // PermissionStore contract: no permission is (nil, nil)
 	}
 	if err != nil {
 		return nil, err
@@ -391,9 +400,9 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 		return storage.PermissionPage{}, err
 	}
 
-	filter := bson.M{"recipient": q.Recipient}
+	filter := bson.M{fieldRecipient: q.Recipient}
 	if q.MessageBox != nil {
-		filter["messageBox"] = *q.MessageBox
+		filter[fieldMessageBox] = *q.MessageBox
 	}
 
 	coll := s.db.Collection(permissionsColl)
@@ -410,7 +419,7 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 		createdAt = 1
 	}
 	sort := bson.D{
-		{Key: "messageBox", Value: 1},
+		{Key: fieldMessageBox, Value: 1},
 		{Key: "sender", Value: 1},
 		{Key: "createdAt", Value: createdAt},
 	}
@@ -487,7 +496,7 @@ func (d deviceDoc) token() string {
 func byToken(fcmToken string) bson.M {
 	return bson.M{"$or": bson.A{
 		bson.M{"fcmToken": fcmToken},
-		bson.M{"_id": fcmToken},
+		bson.M{fieldID: fcmToken},
 	}}
 }
 
@@ -519,7 +528,7 @@ func (s *Store) backfillDeviceTokens(ctx context.Context) error {
 
 	// Some document collides, and UpdateMany stopped at it. Take the rest one at
 	// a time, so the collision can be told from the documents that backfill.
-	cur, err := coll.Find(ctx, lacking, options.Find().SetProjection(bson.M{"_id": 1}))
+	cur, err := coll.Find(ctx, lacking, options.Find().SetProjection(bson.M{fieldID: 1}))
 	if err != nil {
 		return fmt.Errorf("failed to list devices to backfill: %w", err)
 	}
@@ -531,7 +540,7 @@ func (s *Store) backfillDeviceTokens(ctx context.Context) error {
 	}
 	for _, d := range left {
 		// Still without fcmToken, so a replica that got there first is not undone.
-		byDoc := bson.M{"_id": d.ID, "fcmToken": bson.M{"$exists": false}}
+		byDoc := bson.M{fieldID: d.ID, "fcmToken": bson.M{"$exists": false}}
 		_, err := coll.UpdateOne(ctx, byDoc, fromID)
 		if mongo.IsDuplicateKeyError(err) {
 			_, err = coll.DeleteOne(ctx, byDoc)
@@ -549,7 +558,7 @@ func (s *Store) nextSeq(ctx context.Context, name string) (int64, error) {
 		Seq int64 `bson:"seq"`
 	}
 	err := s.db.Collection(countersColl).FindOneAndUpdate(ctx,
-		bson.M{"_id": name},
+		bson.M{fieldID: name},
 		bson.M{"$inc": bson.M{"seq": int64(1)}},
 		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
 	).Decode(&counter)
@@ -569,15 +578,15 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 
 	ts := now()
 	coll := s.db.Collection(devicesColl)
-	byPair := bson.M{"identityKey": d.IdentityKey, "fcmToken": d.FCMToken}
+	byPair := bson.M{fieldIdentityKey: d.IdentityKey, "fcmToken": d.FCMToken}
 	idOnly := bson.M{"registrationId": 1}
 	update := bson.M{
 		"$set": bson.M{
-			"deviceId":  d.DeviceID,
-			"platform":  d.Platform,
-			"active":    true,
-			"updatedAt": ts,
-			"lastUsed":  ts,
+			"deviceId":     d.DeviceID,
+			"platform":     d.Platform,
+			"active":       true,
+			fieldUpdatedAt: ts,
+			"lastUsed":     ts,
 		},
 		// identityKey and fcmToken come from the filter on insert, and the server
 		// assigns the ObjectID _id that deviceDoc.DocID explains.
@@ -610,9 +619,9 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 	// A document from before registrations had IDs. Fill it in only if it is
 	// still absent, so concurrent re-registrations agree on one, then read
 	// back whichever landed.
-	byDoc := bson.M{"_id": doc.DocID}
+	byDoc := bson.M{fieldID: doc.DocID}
 	if _, err := coll.UpdateOne(ctx,
-		bson.M{"_id": doc.DocID, "registrationId": bson.M{"$exists": false}},
+		bson.M{fieldID: doc.DocID, "registrationId": bson.M{"$exists": false}},
 		bson.M{"$set": bson.M{"registrationId": seq}},
 	); err != nil {
 		return 0, err
@@ -625,13 +634,13 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 
 // listDevices runs the shared device query with an optional active filter.
 func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly bool) ([]storage.Device, error) {
-	filter := bson.M{"identityKey": identityKey}
+	filter := bson.M{fieldIdentityKey: identityKey}
 	if activeOnly {
 		filter["active"] = true
 	}
 
 	cur, err := s.db.Collection(devicesColl).Find(ctx, filter,
-		options.Find().SetSort(bson.D{{Key: "updatedAt", Value: -1}}),
+		options.Find().SetSort(bson.D{{Key: fieldUpdatedAt, Value: -1}}),
 	)
 	if err != nil {
 		return nil, err
@@ -689,7 +698,7 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 	ts := now()
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
 		byToken(fcmToken),
-		bson.M{"$set": bson.M{"lastUsed": ts, "updatedAt": ts}},
+		bson.M{"$set": bson.M{"lastUsed": ts, fieldUpdatedAt: ts}},
 	)
 	return err
 }
@@ -700,7 +709,7 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
 		byToken(fcmToken),
-		bson.M{"$set": bson.M{"active": false, "updatedAt": now()}},
+		bson.M{"$set": bson.M{"active": false, fieldUpdatedAt: now()}},
 	)
 	return err
 }
@@ -711,7 +720,7 @@ func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 // pair mid-deploy goes with the registration instead of pushing on.
 func (s *Store) UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error {
 	filter := byToken(fcmToken)
-	filter["identityKey"] = identityKey
+	filter[fieldIdentityKey] = identityKey
 	_, err := s.db.Collection(devicesColl).DeleteMany(ctx, filter)
 	return err
 }

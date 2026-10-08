@@ -3,36 +3,37 @@ module github.com/bsv-blockchain/go-message-box-server
 go 1.27.0
 
 require (
-	firebase.google.com/go/v4 v4.19.0
-	github.com/bsv-blockchain/go-bsv-middleware v0.16.0
-	github.com/bsv-blockchain/go-sdk v1.6.0
+	firebase.google.com/go/v4 v4.22.0
+	github.com/bsv-blockchain/go-bsv-middleware v0.16.2
+	github.com/bsv-blockchain/go-sdk v1.7.1
 	github.com/bsv-blockchain/go-wallet-toolbox v0.186.3
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
-	go.mongodb.org/mongo-driver/v2 v2.9.0
-	google.golang.org/api v0.293.0
+	go.mongodb.org/mongo-driver/v2 v2.9.2
+	google.golang.org/api v0.300.0
 )
 
 require (
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.23.1 // indirect
-	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	cloud.google.com/go/firestore v1.21.0 // indirect
-	cloud.google.com/go/iam v1.5.3 // indirect
-	cloud.google.com/go/longrunning v0.8.0 // indirect
-	cloud.google.com/go/monitoring v1.24.3 // indirect
-	cloud.google.com/go/storage v1.56.0 // indirect
+	cloud.google.com/go/auth v0.24.0 // indirect
+	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
+	cloud.google.com/go/compute/metadata v0.10.0 // indirect
+	cloud.google.com/go/firestore v1.24.0 // indirect
+	cloud.google.com/go/iam v1.12.0 // indirect
+	cloud.google.com/go/longrunning v1.2.0 // indirect
+	cloud.google.com/go/monitoring v1.30.0 // indirect
+	cloud.google.com/go/storage v1.62.1 // indirect
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/keygen v1.0.0 // indirect
 	github.com/DATA-DOG/go-sqlmock v1.5.2 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.35.0 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.56.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.56.0 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/MicahParks/keyfunc v1.9.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.47.0 // indirect
@@ -120,10 +121,10 @@ require (
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
-	github.com/google/s2a-go v0.1.9 // indirect
+	github.com/google/s2a-go v0.1.11 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.21 // indirect
-	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.22 // indirect
+	github.com/googleapis/gax-go/v2 v2.26.2 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
@@ -236,7 +237,6 @@ require (
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/swaggo/files/v2 v2.0.0 // indirect
 	github.com/twmb/franz-go v1.21.6 // indirect
@@ -292,9 +292,9 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/appengine/v2 v2.0.6 // indirect
-	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
+	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/grpc v1.85.0-dev.0.20260825072537-93e31b48545e // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect

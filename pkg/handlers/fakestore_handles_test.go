@@ -41,7 +41,7 @@ func (f *fakeStore) GetHandleBySkeleton(_ context.Context, skeleton string) (*st
 			return copyHandle(r), nil
 		}
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // HandleReader contract: no record is (nil, nil)
 }
 
 // skeletonTakenLocked reports whether a row other than handle already reserves

@@ -178,7 +178,7 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Released {
 		until := now.Add(s.lookup.Cooldown)
-		err := s.handles.ReleaseHandle(r.Context(), storage.HandleRelease{
+		err = s.handles.ReleaseHandle(r.Context(), storage.HandleRelease{
 			Handle: p.Handle, Owner: &p.IdentityKey, IssuedAt: &p.IssuedAt,
 			ReleasedBy: storage.ReleasedByOwner, CooldownUntil: &until, Now: now,
 		})
@@ -200,11 +200,11 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 	// Validate is a claim-time gate: it must not block giving back a handle
 	// that was valid when claimed but would fail the check today (e.g. the
 	// reserved list grew since).
-	switch err := handles.Validate(p.Handle); {
-	case errors.Is(err, handles.ErrReservedHandle):
+	switch validateErr := handles.Validate(p.Handle); {
+	case errors.Is(validateErr, handles.ErrReservedHandle):
 		writeError(w, http.StatusConflict, "ERR_HANDLE_RESERVED", "That handle is reserved.")
 		return
-	case err != nil:
+	case validateErr != nil:
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 3-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
 		return
 	}
@@ -358,7 +358,7 @@ func (s *Server) unavailableReason(ctx context.Context, handle string) (string, 
 	case errors.Is(err, handles.ErrReservedHandle):
 		return "reserved", nil
 	case err != nil:
-		return "invalid", nil
+		return "invalid", nil //nolint:nilerr // a handle failing validation is an answer, not a failure
 	}
 	rec, err := s.handles.GetHandleBySkeleton(ctx, handles.Skeleton(handle))
 	if err != nil || rec == nil {

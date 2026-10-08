@@ -76,7 +76,7 @@ func (e *lookupEnv) do(method, path string, body []byte) *httptest.ResponseRecor
 func (e *lookupEnv) doReader(method, path string, body io.Reader) *httptest.ResponseRecorder {
 	e.t.Helper()
 	w := httptest.NewRecorder()
-	e.mux.ServeHTTP(w, httptest.NewRequest(method, path, body))
+	e.mux.ServeHTTP(w, httptest.NewRequestWithContext(e.t.Context(), method, path, body))
 	return w
 }
 
@@ -277,9 +277,11 @@ func TestPutHandle_Rejects(t *testing.T) {
 	wantStatus(t, e.put(key, "future", now.Add(profilecert.MaxClockSkew), nil), 201, "")
 
 	var m map[string]any
-	_ = json.Unmarshal(certtest.Profile(t, key, "deggen", testDomain, now, nil), &m)
+	if err := json.Unmarshal(certtest.Profile(t, key, "deggen", testDomain, now, nil), &m); err != nil {
+		t.Fatal(err)
+	}
 	m["fields"].(map[string]any)["paymail"] = "victim@example.com"
-	forged, _ := json.Marshal(m)
+	forged := mustMarshal(t, m)
 	wantStatus(t, e.do("PUT", "/api/handle", forged), 400, "ERR_INVALID_CERTIFICATE")
 }
 
@@ -302,7 +304,7 @@ func TestSearch(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &certs); err != nil {
 			t.Fatalf("%s: %v", w.Body, err)
 		}
-		out := []string{}
+		out := make([]string, 0, len(certs))
 		for _, c := range certs {
 			out = append(out, strings.TrimSuffix(c.Fields["paymail"], "@"+testDomain))
 		}
@@ -418,8 +420,10 @@ func TestPutHandle_ConcurrentOneWinner(t *testing.T) {
 	const n = 12
 	codes := make(chan int, n)
 	// Twelve distinct handles, one skeleton ("paypal").
-	variants := []string{"paypal", "pay.pal", "pay-pal", "pay_pal", "p.aypal", "pa.ypal",
-		"payp.al", "paypa.l", "paypa1", "paypai", "p-aypal", "pa-ypal"}
+	variants := []string{
+		"paypal", "pay.pal", "pay-pal", "pay_pal", "p.aypal", "pa.ypal",
+		"payp.al", "paypa.l", "paypa1", "paypai", "p-aypal", "pa-ypal",
+	}
 	for _, h := range variants {
 		body := certtest.Profile(t, testKey(t), h, testDomain, e.now(), nil)
 		go func() { codes <- e.do("PUT", "/api/handle", body).Code }()

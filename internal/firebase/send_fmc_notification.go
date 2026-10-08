@@ -10,7 +10,9 @@ import (
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
-var DEVICE_SEND_MESSAGE_TIMEOUT = 5 * time.Second
+// deviceSendMessageTimeout bounds each FCM send, so one slow or unreachable
+// device cannot hold up delivery to the recipient's other devices.
+var deviceSendMessageTimeout = 5 * time.Second
 
 // storeCallTimeout bounds each device-store call. The caller detaches this work
 // from the request, so nothing else would ever stop it: a lock held on
@@ -71,7 +73,7 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 	for _, device := range deviceList {
 		msg := buildMessage(device.FCMToken, payload)
 
-		sendCtx, cancel := context.WithTimeout(ctx, DEVICE_SEND_MESSAGE_TIMEOUT)
+		sendCtx, cancel := context.WithTimeout(ctx, deviceSendMessageTimeout)
 		_, err := Client().Send(sendCtx, msg)
 		cancel()
 
@@ -86,10 +88,10 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 				// deadline has already expired in the timeout case, and a token
 				// known to be invalid still has to be deactivated.
 				deactivateCtx, cancelDeactivate := context.WithTimeout(ctx, storeCallTimeout)
-				err := devices.DeactivateDevice(deactivateCtx, device.FCMToken)
+				deactivateErr := devices.DeactivateDevice(deactivateCtx, device.FCMToken)
 				cancelDeactivate()
-				if err != nil {
-					logger.Error("[FCM] Failed to deactivate device", "error", err)
+				if deactivateErr != nil {
+					logger.Error("[FCM] Failed to deactivate device", "error", deactivateErr)
 				}
 			}
 			continue
@@ -124,7 +126,10 @@ const notificationBody = "Open the app to view it."
 
 func buildMessage(token string, payload FCMPayload) *messaging.Message {
 	return &messaging.Message{
-		Token: token,
+		// Token is deprecated in favor of Fid, but Fid carries a Firebase
+		// Installation ID; devices here register FCM registration tokens, which
+		// are addressed through Token.
+		Token: token, //nolint:staticcheck // SA1019: registration tokens are not FIDs, see above
 		Notification: &messaging.Notification{
 			Title: payload.Title,
 			Body:  notificationBody,
