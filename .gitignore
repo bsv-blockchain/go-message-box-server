@@ -52,5 +52,7 @@ node_modules/
 # Server binaries and local databases
 messagebox-server
 messagebox.db
+# Wallet SQLite store (cmd/server writes it to the working directory), plus its -wal/-shm files
+wallet-storage.sqlite*
 # go build ./... drops the cmd/server binary here; root-anchored so cmd/server/ stays tracked
 /server
