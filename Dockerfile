@@ -1,7 +1,7 @@
 # Base images are pinned to their multi-arch index digests (not a per-platform
 # manifest digest), so the same pin resolves to linux/amd64 and linux/arm64.
 # Dependabot updates the tag and digest together.
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
 
 RUN apk add --no-cache gcc musl-dev
 
