@@ -135,6 +135,16 @@
 
 <br/>
 
+## Privacy Notice
+
+Message Box stores and relays the message body a sender's client submits, and it does not encrypt or decrypt that body. Clients encrypt message content end to end before sending, and then the host operator cannot read what you send. A body submitted in plaintext is stored in plaintext. Private keys never leave your wallet, and the server returns messages only after it authenticates the recipient's identity key.
+
+To deliver messages, the operator can still see some metadata: when messages are sent and received, message size, and which identity keys (pseudonyms) exchange messages with each other. Identity keys are not names, but repeated use can link activity over time.
+
+This balance keeps delivery simple and reliable while keeping encrypted content private. If unlinkability matters to you, use separate identity keys for each context or run your own Message Box server.
+
+<br/>
+
 ## 📦 Installation
 
 **go-message-box-server** requires a [supported release of Go](https://golang.org/doc/devel/release.html#policy) and a C toolchain, since the SQLite driver uses CGO.
