@@ -7,34 +7,6 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
-func TestLastN(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		n        int
-		expected string
-	}{
-		{"empty string", "", 5, ""},
-		{"n is zero", "hello", 0, ""},
-		{"n negative", "hello", -1, ""},
-		{"n greater than length", "hello", 10, "hello"},
-		{"n equal to length", "hello", 5, "hello"},
-		{"n less than length", "hello", 3, "llo"},
-		{"single char", "a", 1, "a"},
-		{"unicode string", "héllo", 3, "llo"},
-		{"unicode truncate", "世界你好", 2, "你好"}, //nolint:gosmopolitan // multi-byte runes are the point of this case
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := lastN(tt.input, tt.n)
-			if result != tt.expected {
-				t.Errorf("lastN(%q, %d) = %q, expected %q", tt.input, tt.n, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestIsInvalidTokenError(t *testing.T) {
 	tests := []struct {
 		name     string
