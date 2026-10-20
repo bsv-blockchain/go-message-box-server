@@ -205,9 +205,10 @@ KYC. Sets row released with `releasedBy = <admin key>`; `skipCooldown` (default
 true) leaves `cooldownUntil` NULL so the user's new key can claim immediately.
 `skipCooldown: false` quarantines the handle from everyone, the key just
 removed included — `releasedBy` is not `'owner'`, so the reclaim rule above
-grants that key nothing. Every call logged with admin key, handle, previous
-identity key; `lastIdentityKey` keeps naming the removed key, so the row is an
-audit record too.
+grants that key nothing. Every call is logged with the handle alone: the log is
+shipped to a third-party store, so no identity key goes in it. The row is the
+audit record: `releasedBy` names the admin and `lastIdentityKey` the removed
+key.
 
 ## Client verification (normative for BRFC docs)
 

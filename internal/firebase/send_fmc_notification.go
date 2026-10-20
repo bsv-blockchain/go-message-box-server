@@ -22,6 +22,11 @@ var deviceSendMessageTimeout = 5 * time.Second
 // delivery, until the pool is exhausted and foreground sends start failing.
 var storeCallTimeout = 5 * time.Second
 
+// sendFCM sends one message. It is a variable so tests can stand in for FCM.
+var sendFCM = func(ctx context.Context, msg *messaging.Message) (string, error) {
+	return Client().Send(ctx, msg)
+}
+
 // FCMPayload contains the notification data to send.
 type FCMPayload struct {
 	Title      string
@@ -46,28 +51,30 @@ type SendFCMNotificationResult struct {
 // It bounds every call it makes — each FCM send and each device-store call gets
 // its own timeout — so the caller can pass a context with no deadline and still
 // be sure this returns. Cancelling the passed context stops the run.
+//
+// Nothing here logs the recipient, the message ID or an FCM token, not even the
+// tail of one: the log is shipped to a third-party store, and each of them ties
+// a delivery to a user or a device, so a line that carried one would say who
+// was paid and when. The lines carry the message box, counts and error text.
 func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recipient string, payload FCMPayload) *SendFCMNotificationResult {
 	if !IsEnabled() {
 		return &SendFCMNotificationResult{Success: false, Error: "FCM not configured"}
 	}
 
-	logger.Log("[DEBUG] Attempting to send FCM notification to", "recipient", recipient)
-	logger.Log("[DEBUG] Payload", "payload", payload)
-
 	listCtx, cancelList := context.WithTimeout(ctx, storeCallTimeout)
 	deviceList, err := devices.ListActiveDevices(listCtx, recipient)
 	cancelList()
 	if err != nil {
-		logger.Error("[FCM] Failed to get devices", "error", err, "recipient", recipient)
+		logger.Error("[FCM] Failed to get devices", "error", err, "messageBox", payload.MessageBox)
 		return &SendFCMNotificationResult{Success: false, Error: fmt.Sprintf("failed to get devices: %v", err)}
 	}
 
 	if len(deviceList) == 0 {
-		logger.Log("[FCM] No active devices found", "recipient", recipient)
+		logger.Log("[FCM] No active devices found", "messageBox", payload.MessageBox)
 		return &SendFCMNotificationResult{Success: false, Error: "No registered devices found for recipient"}
 	}
 
-	logger.Log("[FCM] Sending notifications", "recipient", recipient, "deviceCount", len(deviceList))
+	logger.Log("[FCM] Sending notifications", "messageBox", payload.MessageBox, "deviceCount", len(deviceList))
 
 	var successCount, failureCount int
 
@@ -75,16 +82,16 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 		msg := buildMessage(device.FCMToken, payload)
 
 		sendCtx, cancel := context.WithTimeout(ctx, deviceSendMessageTimeout)
-		_, err := Client().Send(sendCtx, msg)
+		_, err := sendFCM(sendCtx, msg)
 		cancel()
 
 		if err != nil {
-			logger.Error("[FCM] Failed to send", "error", err, "tokenSuffix", lastN(device.FCMToken, 10))
+			logger.Error("[FCM] Failed to send", "error", err)
 			failureCount++
 
 			// we only mark devices as disabled when token is invalid
 			if isInvalidTokenError(err) {
-				logger.Log("[FCM] Deactivating invalid token", "tokenSuffix", lastN(device.FCMToken, 10))
+				logger.Log("[FCM] Deactivating invalid token")
 				// Recording the outcome gets its own budget: the send's
 				// deadline has already expired in the timeout case, and a token
 				// known to be invalid still has to be deactivated.
@@ -99,7 +106,6 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 		}
 
 		successCount++
-		logger.Log("[FCM] Notification sent", "tokenSuffix", lastN(device.FCMToken, 10))
 
 		lastUsedCtx, cancelLastUsed := context.WithTimeout(ctx, storeCallTimeout)
 		err = devices.UpdateDeviceLastUsed(lastUsedCtx, device.FCMToken)
@@ -109,7 +115,7 @@ func SendFCMNotification(ctx context.Context, devices storage.DeviceStore, recip
 		}
 	}
 
-	logger.Log("[FCM] Send complete", "success", successCount, "failed", failureCount)
+	logger.Log("[FCM] Send complete", "messageBox", payload.MessageBox, "success", successCount, "failed", failureCount)
 
 	// if not a single device received a notification consider it a fail
 	// otherwise we consider it a success
@@ -172,19 +178,4 @@ func buildMessage(token string, payload FCMPayload) *messaging.Message {
 
 func isInvalidTokenError(err error) bool {
 	return messaging.IsUnregistered(err) || messaging.IsInvalidArgument(err)
-}
-
-// lastN returns the last n characters of a string (for logging tokens safely)
-// UTF-8 compatible.
-func lastN(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-
-	return string(r[len(r)-n:])
 }

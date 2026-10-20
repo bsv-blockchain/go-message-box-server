@@ -46,9 +46,8 @@ func (f *fakeDeviceStore) UnregisterDevice(context.Context, string, string) erro
 var _ storage.DeviceStore = (*fakeDeviceStore)(nil)
 
 // withClient installs a non-nil messaging client so IsEnabled() reports true.
-// It is a zero value, so it must not be used to actually send: only the paths
-// that return before the send loop are covered here. Testing the send loop
-// itself needs an injectable sender, which the firebase package does not have.
+// It is a zero value, so it must not be used to actually send: a test that
+// reaches the send loop replaces sendFCM (see withSender).
 func withClient(t *testing.T) {
 	t.Helper()
 	original := client

@@ -37,7 +37,11 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "ERR_AUTH_REQUIRED", "Authentication required")
 		return
 	}
+	s.sendMessage(w, r, senderKey)
+}
 
+// sendMessage is SendMessage for an already-authenticated sender.
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey string) {
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "ERR_INVALID_JSON", "Invalid JSON body")
@@ -265,7 +269,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			// Not expected: Body is a json.RawMessage the request decoder already
 			// validated, and the rest are plain values. Storing the message with an
 			// empty body, as ignoring the error used to, would lose it silently.
-			logger.Error("failed to encode stored message body", "error", marshalErr, "messageId", msgID)
+			logger.Error("failed to encode stored message body", "error", marshalErr)
 			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
 			return
 		}
@@ -279,7 +283,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.Store.InsertMessage(writeCtx, newMsg); err != nil {
 			if errors.Is(err, storage.ErrDuplicateMessage) {
-				logger.Error("duplicate message rejected", "messageId", msgID)
+				logger.Error("duplicate message rejected", "messageBox", boxType)
 				writeError(w, 400, "ERR_DUPLICATE_MESSAGE", "Duplicate message.")
 				return
 			}
