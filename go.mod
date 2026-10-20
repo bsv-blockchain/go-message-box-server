@@ -6,7 +6,7 @@ require (
 	firebase.google.com/go/v4 v4.22.0
 	github.com/bsv-blockchain/go-bsv-middleware v0.16.3
 	github.com/bsv-blockchain/go-sdk v1.7.2
-	github.com/bsv-blockchain/go-wallet-toolbox v0.190.0
+	github.com/bsv-blockchain/go-wallet-toolbox v0.191.0
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/stretchr/testify v1.12.1
