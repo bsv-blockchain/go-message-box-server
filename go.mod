@@ -5,8 +5,8 @@ go 1.27.0
 require (
 	firebase.google.com/go/v4 v4.22.0
 	github.com/bsv-blockchain/go-bsv-middleware v0.16.3
-	github.com/bsv-blockchain/go-sdk v1.7.2
-	github.com/bsv-blockchain/go-wallet-toolbox v0.191.0
+	github.com/bsv-blockchain/go-sdk v1.7.3
+	github.com/bsv-blockchain/go-wallet-toolbox v0.191.1
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/stretchr/testify v1.12.1
@@ -56,12 +56,12 @@ require (
 	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bitcoin-sv/bdk/module/gobdk v1.3.0 // indirect
+	github.com/bitcoin-sv/bdk/module/gobdk v1.3.1 // indirect
 	github.com/bsv-blockchain/aerospike-client-go/v8 v8.7.1-bsv6 // indirect
 	github.com/bsv-blockchain/go-batcher/v2 v2.1.1 // indirect
 	github.com/bsv-blockchain/go-bt/v2 v2.7.4 // indirect
 	github.com/bsv-blockchain/go-chaincfg v1.7.0 // indirect
-	github.com/bsv-blockchain/go-chaintracks v1.4.3 // indirect
+	github.com/bsv-blockchain/go-chaintracks v1.4.5 // indirect
 	github.com/bsv-blockchain/go-lockfree-queue v1.2.0 // indirect
 	github.com/bsv-blockchain/go-p2p-message-bus v0.2.0 // indirect
 	github.com/bsv-blockchain/go-safe-conversion v1.2.0 // indirect
