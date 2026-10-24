@@ -265,7 +265,7 @@ func TestPutHandle_Rejects(t *testing.T) {
 	// A body that dies mid-read is a bad request, not an oversized one.
 	wantStatus(t, e.doReader("PUT", "/api/handle", &errReader{}), 400, "ERR_INVALID_CERTIFICATE")
 	wantStatus(t, e.do("PUT", "/api/handle", certtest.Profile(t, key, "deggen", "evil.com", now, nil)), 400, "ERR_WRONG_DOMAIN")
-	wantStatus(t, e.put(key, "ab", now, nil), 400, "ERR_INVALID_HANDLE")
+	wantStatus(t, e.put(key, "-ab", now, nil), 400, "ERR_INVALID_HANDLE")
 	wantStatus(t, e.put(key, "deg+gen", now, nil), 400, "ERR_INVALID_HANDLE")
 	wantStatus(t, e.put(key, "adm1n", now, nil), 409, "ERR_HANDLE_RESERVED")
 
@@ -367,7 +367,8 @@ func TestAvailable(t *testing.T) {
 	check("deggen", false, "taken")
 	check("deg.gen", false, "too_similar")
 	check("adm1n", false, "reserved")
-	check("x", false, "invalid")
+	check("x", true, "")
+	check("-x", false, "invalid")
 
 	// Dropping the handle is a mistake, not a search for the handle
 	// "available", which is reserved and can never be registered.

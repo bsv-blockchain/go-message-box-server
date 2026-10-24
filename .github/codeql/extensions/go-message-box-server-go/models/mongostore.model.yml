@@ -45,3 +45,9 @@ extensions:
       - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetHandleByIdentityKey", "", "", "Parameter[1]", "nosql-injection", "manual"]
       - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ClaimHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]
       - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ReleaseHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      # handle subscriptions
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "GetSubscription", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "BindSubscription", "", "", "Parameter[1..2]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "UpdateSubscriptionStatus", "", "", "Parameter[1..2]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "MarkSubscriptionReleased", "", "", "Parameter[1]", "nosql-injection", "manual"]
+      - ["github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore", "Store", False, "ListSubscriptionsByHandle", "", "", "Parameter[1]", "nosql-injection", "manual"]

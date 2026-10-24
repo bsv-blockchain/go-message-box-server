@@ -39,7 +39,9 @@ var (
 	ErrReservedHandle = errors.New("reserved handle")
 )
 
-var handleRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$`)
+// handleRE admits 1-32 characters, starting and ending with a letter or digit:
+// the app sells handles down to one character (the len1 and len2 tiers).
+var handleRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,30}[a-z0-9])?$`)
 
 var reserved = []string{
 	"admin", "administrator", "root", "support", "help", "postmaster", "abuse",
@@ -93,4 +95,47 @@ func Skeleton(s string) string {
 		last = r
 	}
 	return b.String()
+}
+
+// TopTier is the longest length with a price tier of its own; every longer
+// handle shares it.
+const TopTier = 7
+
+// Tier is a paid handle's price tier: its length, capped at TopTier. The store
+// products are named after it (handle.len<N>).
+func Tier(handle string) int {
+	return min(max(len(handle), 1), TopTier)
+}
+
+var (
+	generatedRE  = regexp.MustCompile(`^([a-z]+)[0-9]{2}$`)
+	adjectiveSet = setOf(adjectives)
+	animalSet    = setOf(animals)
+)
+
+func setOf(words []string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
+}
+
+// IsGenerated reports whether handle has the exact shape of a handle the app
+// generates for free: <adjective><animal><two digits>, from the word lists in
+// words.go. It mirrors isGeneratedPattern in the wallet's
+// src/handles/generator.ts, which also refuses to sell a name of this shape, so
+// the free namespace and the paid one never overlap. Every other handle is paid.
+func IsGenerated(handle string) bool {
+	m := generatedRE.FindStringSubmatch(strings.ToLower(handle))
+	if m == nil {
+		return false
+	}
+	letters := m[1]
+	for i := 1; i < len(letters); i++ {
+		if adjectiveSet[letters[:i]] && animalSet[letters[i:]] {
+			return true
+		}
+	}
+	return false
 }

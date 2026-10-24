@@ -244,6 +244,13 @@ definitions:
         example: "2024-01-01T12:00:00.000Z"
         type: string
     type: object
+  handlers.PutHandleRequest:
+    properties:
+      certificate:
+        type: object
+      purchase:
+        $ref: '#/definitions/purchases.Purchase'
+    type: object
   handlers.QuoteEntry:
     description: Quote for one recipient in batch
     properties:
@@ -416,6 +423,17 @@ definitions:
         example: success
         type: string
     type: object
+  purchases.Purchase:
+    properties:
+      productId:
+        type: string
+      store:
+        type: string
+      token:
+        type: string
+      transactionId:
+        type: string
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -517,14 +535,14 @@ paths:
     put:
       consumes:
         - application/json
+      description: 'Body is the bare certificate, or {"certificate": {...}, "purchase": {"store": "app-store"|"google-play", "productId", "transactionId", "token"}}. A purchase is needed to register a paid handle; updates and releases never need one.'
       parameters:
-        - description: Self-signed profile certificate
+        - description: Self-signed profile certificate, bare or with a purchase
           in: body
-          name: certificate
+          name: request
           required: true
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/handlers.PutHandleRequest'
       produces:
         - application/json
       responses:
@@ -539,11 +557,23 @@ paths:
             additionalProperties: true
             type: object
         "400":
-          description: Bad Request
+          description: ERR_INVALID_CERTIFICATE, ERR_INVALID_HANDLE, ERR_PURCHASE_INVALID
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "402":
+          description: ERR_PURCHASE_REQUIRED, ERR_PURCHASE_INACTIVE
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "409":
-          description: Conflict
+          description: registry conflicts, ERR_PURCHASE_TIER_MISMATCH, ERR_PURCHASE_USED
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "502":
+          description: ERR_STORE_UNAVAILABLE
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       summary: Register, update or release a handle
@@ -611,6 +641,48 @@ paths:
       summary: Reverse lookup (capability 43dcf83ddc5f)
       tags:
         - lookup
+  /api/store/apple/notifications:
+    post:
+      consumes:
+        - application/json
+      description: Apple posts {signedPayload}. The subscription it names is looked up again with the App Store Server API; nothing in the payload is trusted.
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: App Store Server Notifications V2
+      tags:
+        - purchases
+  /api/store/google/notifications:
+    post:
+      consumes:
+        - application/json
+      description: The purchase token it names is looked up again with purchases.subscriptionsv2.get; nothing in the message is trusted.
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Google Play real-time developer notifications (Pub/Sub push)
+      tags:
+        - purchases
   /devices:
     get:
       description: Returns all devices registered for push notifications for the authenticated identity.

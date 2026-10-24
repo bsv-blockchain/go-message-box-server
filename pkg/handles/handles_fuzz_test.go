@@ -81,7 +81,7 @@ func FuzzValidate(f *testing.F) {
 			return
 		}
 
-		require.GreaterOrEqual(t, len(handle), 3)
+		require.GreaterOrEqual(t, len(handle), 1)
 		require.LessOrEqual(t, len(handle), 32)
 		for i := 0; i < len(handle); i++ {
 			c := handle[i]

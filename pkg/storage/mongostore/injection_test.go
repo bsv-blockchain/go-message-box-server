@@ -390,3 +390,82 @@ func TestOperatorPayloadsAreTreatedAsLiterals(t *testing.T) {
 		t.Errorf("real permission was disturbed: %+v", p)
 	}
 }
+
+// TestSubscriptionPayloadsAreTreatedAsLiterals is the same proof for the
+// handle-subscription methods. Their ids come from store notifications and
+// purchase requests, so an operator-shaped id must match only itself.
+func TestSubscriptionPayloadsAreTreatedAsLiterals(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	ctx := context.Background()
+	s := newMongo(t, uri, database).(*Store)
+	t0 := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+
+	realSub := storage.Subscription{
+		ID: storage.SubscriptionID(storage.StoreAppStore, "1000"), Store: storage.StoreAppStore, StoreID: "1000",
+		Handle: "deggen", IdentityKey: "02realkey",
+		SubscriptionStatus: storage.SubscriptionStatus{
+			ProductID: "org.bsvblockchain.wallet.handle.len6.monthly", Tier: 6, State: storage.SubActive,
+			ExpiresAt: t0.Add(30 * 24 * time.Hour), Environment: "Production",
+		},
+		CreatedAt: t0, UpdatedAt: t0,
+	}
+	if err := s.BindSubscription(ctx, realSub, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	payloads := []string{`{"$ne": null}`, `{"$gt": ""}`, `{"$exists": true}`, "$ne", `{"$regex": ".*"}`}
+	for _, payload := range payloads {
+		t.Run("GetSubscription/"+payload, func(t *testing.T) {
+			if got, err := s.GetSubscription(ctx, payload); err != nil || got != nil {
+				t.Errorf("payload read %+v, %v; want nil, nil", got, err)
+			}
+		})
+
+		t.Run("ListSubscriptionsByHandle/"+payload, func(t *testing.T) {
+			got, err := s.ListSubscriptionsByHandle(ctx, payload)
+			if err != nil || len(got) != 0 {
+				t.Errorf("payload listed %d rows, %v; want 0", len(got), err)
+			}
+		})
+
+		t.Run("UpdateSubscriptionStatus/"+payload, func(t *testing.T) {
+			st := realSub.SubscriptionStatus
+			st.State = storage.SubExpired
+			if err := s.UpdateSubscriptionStatus(ctx, payload, st, t0); !errors.Is(err, storage.ErrSubscriptionNotFound) {
+				t.Errorf("err = %v, want ErrSubscriptionNotFound", err)
+			}
+		})
+
+		t.Run("MarkSubscriptionReleased/"+payload, func(t *testing.T) {
+			if err := s.MarkSubscriptionReleased(ctx, payload, t0); !errors.Is(err, storage.ErrSubscriptionNotFound) {
+				t.Errorf("err = %v, want ErrSubscriptionNotFound", err)
+			}
+		})
+
+		t.Run("BindSubscription/"+payload, func(t *testing.T) {
+			// A rebind of the real row whose expected binding is a payload must
+			// not match it.
+			moved := realSub
+			moved.Handle, moved.IdentityKey = "stolen", "02attacker"
+			prev := realSub
+			prev.Handle, prev.IdentityKey = payload, payload
+			if err := s.BindSubscription(ctx, moved, &prev); !errors.Is(err, storage.ErrSubscriptionRaced) {
+				t.Errorf("err = %v, want ErrSubscriptionRaced", err)
+			}
+		})
+	}
+
+	got, err := s.GetSubscription(ctx, realSub.ID)
+	if err != nil || got == nil || got.Handle != "deggen" || got.IdentityKey != "02realkey" ||
+		got.State != storage.SubActive || got.ReleasedAt != nil {
+		t.Errorf("real subscription was disturbed: %+v, %v", got, err)
+	}
+}

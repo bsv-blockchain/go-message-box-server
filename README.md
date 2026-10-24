@@ -279,7 +279,7 @@ All endpoints below require BRC-31 authentication via the `go-bsv-middleware` au
 
 `LIST_DEFAULT_LIMIT` must not exceed `LIST_MAX_LIMIT` (when the latter is capped); the process refuses to start otherwise.
 
-The optional paymail profile lookup reads its own settings, listed under **Paymail Profile Lookup** below.
+The optional paymail profile lookup reads its own settings, listed under **Paymail Profile Lookup** below, and paid handles theirs under **Paid Handles**.
 
 </details>
 
@@ -367,6 +367,7 @@ Set `TRUSTED_PROXY_HOPS` to the number of proxies you run in front of the server
 | GET    | `/api/handle/{query}`            | none                            | Search, ranked, max 10 (capability `0ace65da5987`)         |
 | GET    | `/api/handle/available/{handle}` | none                            | Advisory availability check                                |
 | GET    | `/api/identityKey/{pubkey}`      | none                            | Reverse lookup (capability `43dcf83ddc5f`)                 |
+| POST   | `/api/store/apple/notifications`, `/api/store/google/notifications` | none (see **Paid Handles**) | Store subscription notifications |
 | POST   | `/admin/handle/release`          | BRC-104 + `ADMIN_IDENTITY_KEYS` | Operator release after lost keys                           |
 
 The public routes carry no session auth by design: a `PUT` is authorized by the certificate in its body, a statement the identity key signed naming the handle. They sit outside the auth and payment middleware and are mounted at fixed paths; `ROUTING_PREFIX` applies to the admin route only.
@@ -387,6 +388,116 @@ Normative for anyone implementing a resolver:
 2. For every certificate received: check `type`, `subject == certifier`, signature, `fields.paymail` ends with `@<queried domain>`, no `released`.
 3. Search results are suggestions. Show full `fields.paymail`; user selects. Never auto-select `result[0]`. If the user entered a complete `handle@domain`, require `fields.paymail` to equal it exactly.
 4. Reverse lookup: additionally require `subject ==` queried key; optionally forward-resolve `fields.paymail` and compare.
+
+</details>
+
+<details>
+<summary><strong><code>Paid Handles</code></strong></summary>
+<br/>
+
+Optional, on top of the paymail profile lookup: custom handles are sold by the
+BSV wallet app as auto-renewing App Store and Google Play subscriptions, and
+with `HANDLE_PURCHASES_REQUIRED=true` the registry grants one only after the
+store itself confirms the subscription.
+
+- **Free:** handles shaped like the ones the wallet generates,
+  `<adjective><animal><two digits>` (`ableotter07`), from the word lists in
+  `pkg/handles/words.go` — copied by hand from the wallet's
+  `src/handles/words.ts` and never regenerated.
+- **Paid:** every other handle. Its tier is its length, capped at 7 (7 means
+  seven or more characters), and the subscription's product must be of that
+  tier:
+  - App Store: `org.bsvblockchain.wallet.handle.len<N>.monthly|yearly`
+  - Google Play: product `org.bsvblockchain.wallet.handle.len<N>`, base plan
+    `monthly` or `yearly`
+- **Updates are free:** a key that already holds the handle can replace or
+  release its certificate without sending a purchase.
+- **One subscription, one handle:** a subscription is bound to the handle and
+  key it was first used for, and pays for another handle only once that key no
+  longer holds the first one (a handle change, a release, a lapse).
+- **Lapse:** store notifications keep each subscription's state and expiry
+  current. An hourly sweep releases a handle once its subscription's expiry
+  (the refund date, for a revoked one) is more than `HANDLE_GRACE_DAYS` in the
+  past and the store no longer grants access, asking the store again first so
+  a missed renewal notification never costs anyone their handle. The days count
+  from the paid period's end, not from when access ended: while the store's own
+  billing grace period runs the handle is kept, and when that ends after more
+  than `HANDLE_GRACE_DAYS` the handle goes on the next sweep. A crossgrade to
+  another tier keeps the handle only until the last period of the right tier
+  ends. The release has no cooldown.
+
+Nothing the client sends is believed: the App Store transaction is looked up
+with the App Store Server API and the Play purchase token with
+`purchases.subscriptionsv2.get`. Subscriptions are kept in the Mongo collection
+`handle_subscriptions`, so this also needs `STORAGE_BACKEND=mongo`.
+
+#### Registering a paid handle
+
+`PUT /api/handle` takes the certificate wrapped with the purchase (a bare
+certificate is still accepted for free handles, updates and releases):
+
+```json
+{
+  "certificate": { "type": "…", "serialNumber": "…", "fields": { "paymail": "deggen@example.com", "issuedAt": "…" }, "…": "…" },
+  "purchase": {
+    "store": "app-store",
+    "productId": "org.bsvblockchain.wallet.handle.len6.monthly",
+    "transactionId": "2000000123456789",
+    "token": "<StoreKit 2 signed transaction (JWS)>"
+  }
+}
+```
+
+For Google Play, `store` is `google-play`, `productId` is the product without a
+base plan (`org.bsvblockchain.wallet.handle.len6`) and `token` is the purchase
+token; `transactionId` (the order id) is optional. For the App Store either
+`transactionId` or `token` is enough; when both are sent they must agree.
+
+| Status | Code | Meaning |
+|---|---|---|
+| 402 | `ERR_PURCHASE_REQUIRED` | Paid handle, no purchase sent |
+| 400 | `ERR_PURCHASE_INVALID` | The store does not know it, it is another app's or product's, the store is not accepted here, or a test purchase is refused |
+| 409 | `ERR_PURCHASE_TIER_MISMATCH` | The product's length tier is not the handle's |
+| 402 | `ERR_PURCHASE_INACTIVE` | Expired, on hold, revoked or pending |
+| 409 | `ERR_PURCHASE_USED` | The subscription pays for a handle another key, or this key, still holds |
+| 502 | `ERR_STORE_UNAVAILABLE` | The store could not be asked; safe to retry |
+
+#### Store notifications
+
+| Method | Path | Configure in |
+|---|---|---|
+| POST | `/api/store/apple/notifications` | App Store Connect → App → App Information → App Store Server Notifications, Version 2 (production and sandbox URLs) |
+| POST | `/api/store/google/notifications` | A Pub/Sub topic set as the app's real-time developer notifications topic in Play Console, with a push subscription to this URL |
+
+Both are public, mounted at fixed paths outside the auth middleware and the
+lookup rate limiter. A notification is only a hint: the subscription it names is
+read again from the store, so a forged one can do no more than cause a lookup.
+For the push subscription, enable authentication with a service account and set
+`GOOGLE_PUBSUB_AUDIENCE` (and `GOOGLE_PUBSUB_SERVICE_ACCOUNT`) so pushes without
+Google's OIDC token are refused. A notification that cannot be refreshed because
+the store is down answers 503 so it is redelivered.
+
+#### Configuration
+
+Secrets come only from the environment or mounted files; never commit them.
+
+| Env | Meaning | Default |
+|---|---|---|
+| `HANDLE_PURCHASES_REQUIRED` | `true` turns paid handles on. Needs `PAYMAIL_DOMAIN` and at least one store below, or the process refuses to start | `false` |
+| `HANDLE_GRACE_DAYS` | Days after a subscription lapses before its handle is released | `14` |
+| `APPLE_BUNDLE_ID` | App bundle id; setting it accepts App Store purchases | unset |
+| `APPLE_ISSUER_ID` | App Store Connect → Users and Access → Integrations → In-App Purchase: issuer id | required with bundle id |
+| `APPLE_KEY_ID` | That page's key id | required with bundle id |
+| `APPLE_PRIVATE_KEY` / `APPLE_PRIVATE_KEY_PATH` | The key's `.p8` file: its PEM contents, or a path to it | one required with bundle id |
+| `APPLE_ENVIRONMENTS` | Comma list tried in order for a new purchase: `Production`, `Sandbox`. Add `Sandbox` for TestFlight and App Review, whose purchases are sandbox (and free) | `Production` |
+| `GOOGLE_PLAY_PACKAGE_NAME` | App package; setting it accepts Play purchases | unset |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` / `_PATH` | Service account key with "View financial data" and "Manage orders and subscriptions" on the app in Play Console | one required with package |
+| `GOOGLE_PLAY_ALLOW_TEST_PURCHASES` | `true` accepts license testers' (free) purchases | `false` |
+| `GOOGLE_PUBSUB_AUDIENCE` | The push subscription's OIDC audience; unset accepts unauthenticated pushes | unset |
+| `GOOGLE_PUBSUB_SERVICE_ACCOUNT` | The push subscription's service account email, checked against the token | unset |
+
+A store left unconfigured is refused (`ERR_PURCHASE_INVALID`), never waved
+through.
 
 </details>
 

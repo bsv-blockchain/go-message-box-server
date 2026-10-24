@@ -27,7 +27,9 @@ const (
 	feesColl        = "server_fees"
 	devicesColl     = "device_registrations"
 	handlesColl     = "handles"
-	countersColl    = "counters"
+	// subscriptionsColl holds the store subscriptions that pay for handles.
+	subscriptionsColl = "handle_subscriptions"
+	countersColl      = "counters"
 )
 
 // Field names shared by several collections.
@@ -38,6 +40,9 @@ const (
 	fieldRecipient   = "recipient"
 	fieldUpdatedAt   = "updatedAt"
 )
+
+// opSet is the update operator every write here uses.
+const opSet = "$set"
 
 // Store is a MongoDB-backed storage.Store.
 type Store struct {
@@ -136,6 +141,12 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 				Options: options.Index().SetUnique(true).
 					SetPartialFilterExpression(bson.D{{Key: fieldIdentityKey, Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
+		},
+		subscriptionsColl: {
+			// The handle's subscriptions, read on every lapse and claim.
+			{Keys: bson.D{{Key: "handle", Value: 1}}},
+			// The lapse sweep: earliest expiry first among rows not yet released.
+			{Keys: bson.D{{Key: "expiresAt", Value: 1}, {Key: "_id", Value: 1}}},
 		},
 	}
 
@@ -327,7 +338,7 @@ func permissionKey(recipient string, sender *string, messageBox string) bson.M {
 func (s *Store) SetPermission(ctx context.Context, recipient string, sender *string, messageBox string, recipientFee int) error {
 	ts := now()
 	update := bson.M{
-		"$set": bson.M{"recipientFee": recipientFee, fieldUpdatedAt: ts},
+		opSet: bson.M{"recipientFee": recipientFee, fieldUpdatedAt: ts},
 		"$setOnInsert": bson.M{
 			fieldRecipient: recipient, "sender": sender, fieldMessageBox: messageBox, "createdAt": ts,
 		},
@@ -516,7 +527,7 @@ func byToken(fcmToken string) bson.M {
 func (s *Store) backfillDeviceTokens(ctx context.Context) error {
 	coll := s.db.Collection(devicesColl)
 	lacking := bson.M{"fcmToken": bson.M{"$exists": false}}
-	fromID := mongo.Pipeline{{{Key: "$set", Value: bson.D{{Key: "fcmToken", Value: "$_id"}}}}}
+	fromID := mongo.Pipeline{{{Key: opSet, Value: bson.D{{Key: "fcmToken", Value: "$_id"}}}}}
 
 	_, err := coll.UpdateMany(ctx, lacking, fromID)
 	if err == nil {
@@ -581,7 +592,7 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 	byPair := bson.M{fieldIdentityKey: d.IdentityKey, "fcmToken": d.FCMToken}
 	idOnly := bson.M{"registrationId": 1}
 	update := bson.M{
-		"$set": bson.M{
+		opSet: bson.M{
 			"deviceId":     d.DeviceID,
 			"platform":     d.Platform,
 			"active":       true,
@@ -622,7 +633,7 @@ func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64,
 	byDoc := bson.M{fieldID: doc.DocID}
 	if _, err := coll.UpdateOne(ctx,
 		bson.M{fieldID: doc.DocID, "registrationId": bson.M{"$exists": false}},
-		bson.M{"$set": bson.M{"registrationId": seq}},
+		bson.M{opSet: bson.M{"registrationId": seq}},
 	); err != nil {
 		return 0, err
 	}
@@ -698,7 +709,7 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 	ts := now()
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
 		byToken(fcmToken),
-		bson.M{"$set": bson.M{"lastUsed": ts, fieldUpdatedAt: ts}},
+		bson.M{opSet: bson.M{"lastUsed": ts, fieldUpdatedAt: ts}},
 	)
 	return err
 }
@@ -709,7 +720,7 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.db.Collection(devicesColl).UpdateMany(ctx,
 		byToken(fcmToken),
-		bson.M{"$set": bson.M{"active": false, fieldUpdatedAt: now()}},
+		bson.M{opSet: bson.M{"active": false, fieldUpdatedAt: now()}},
 	)
 	return err
 }

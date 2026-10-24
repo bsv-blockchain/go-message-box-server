@@ -167,6 +167,22 @@ func main() {
 		mux.HandleFunc("POST "+prefix+"/admin/handle/release", srv.AdminReleaseHandle)
 	}
 
+	// Paid handles: the store notification routes, and the sweep that releases
+	// handles whose subscriptions lapsed. Both stop with the process.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	// Not setupCtx: the Play client keeps this context for its token refreshes,
+	// so it must outlive the setup deadline.
+	storeRoutes, err := enablePurchases(context.Background(), cfg, srv, store)
+	if err != nil {
+		slog.Error("cannot enable paid handles", "error", err)
+		os.Exit(1)
+	}
+	if storeRoutes != nil {
+		go srv.RunSubscriptionSweeper(sweepCtx, time.Hour)
+		slog.Info("paid handles enabled", "appStore", cfg.Apple.Configured(), "googlePlay", cfg.Google.Configured(), "grace", cfg.HandleGrace)
+	}
+
 	// Auth middleware
 	authMiddleware := middleware.NewAuth(w)
 
@@ -189,6 +205,9 @@ func main() {
 		rootMux.Handle("/api/handle", public)
 		rootMux.Handle("/api/handle/", public)
 		rootMux.Handle("/api/identityKey/", public)
+		if storeRoutes != nil {
+			rootMux.Handle("/api/store/", storeRoutes)
+		}
 		slog.Info("paymail profile lookup enabled", "domain", cfg.PaymailDomain)
 		// The capability document hands PAYMAIL_HOST to clients as the base of
 		// every lookup URL. A client that resolved this server through a
@@ -228,6 +247,7 @@ func main() {
 	<-stop
 
 	logger.Log("shutting down...")
+	stopSweep()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

@@ -148,7 +148,7 @@ func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.C
 			"issuedAt":       bson.M{"$lt": c.IssuedAt},
 			"serialNumber":   bson.M{"$ne": c.SerialNumber},
 		},
-		bson.M{"$set": bson.M{
+		bson.M{opSet: bson.M{
 			"skeleton": c.Skeleton, "certificate": c.Certificate, "serialNumber": c.SerialNumber,
 			"issuedAt": c.IssuedAt, fieldUpdatedAt: ts,
 		}},
@@ -182,7 +182,7 @@ func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.C
 			"$or":            free,
 		},
 		bson.M{
-			"$set": bson.M{
+			opSet: bson.M{
 				"skeleton": c.Skeleton, fieldIdentityKey: c.IdentityKey, "lastIdentityKey": c.IdentityKey,
 				"certificate": c.Certificate, "serialNumber": c.SerialNumber,
 				"issuedAt": c.IssuedAt, fieldUpdatedAt: ts,
@@ -247,7 +247,7 @@ func (s *Store) ReleaseHandle(ctx context.Context, r storage.HandleRelease) erro
 		unset["cooldownUntil"] = ""
 	}
 
-	res, err := s.db.Collection(handlesColl).UpdateOne(ctx, filter, bson.M{"$set": set, "$unset": unset})
+	res, err := s.db.Collection(handlesColl).UpdateOne(ctx, filter, bson.M{opSet: set, "$unset": unset})
 	if err != nil {
 		// Nothing here can collide with a unique key, so a driver error is the
 		// database failing rather than the registry refusing. Diagnosing it would
