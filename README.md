@@ -250,10 +250,15 @@ store itself confirms the subscription.
   key it was first used for, and pays for another handle only once that key no
   longer holds the first one (a handle change, a release, a lapse).
 - **Lapse:** store notifications keep each subscription's state and expiry
-  current. An hourly sweep releases a handle once its subscription has been
-  expired, on hold, revoked or crossgraded to another tier for longer than
-  `HANDLE_GRACE_DAYS`, asking the store again first so a missed renewal
-  notification never costs anyone their handle. The release has no cooldown.
+  current. An hourly sweep releases a handle once its subscription's expiry
+  (the refund date, for a revoked one) is more than `HANDLE_GRACE_DAYS` in the
+  past and the store no longer grants access, asking the store again first so
+  a missed renewal notification never costs anyone their handle. The days count
+  from the paid period's end, not from when access ended: while the store's own
+  billing grace period runs the handle is kept, and when that ends after more
+  than `HANDLE_GRACE_DAYS` the handle goes on the next sweep. A crossgrade to
+  another tier keeps the handle only until the last period of the right tier
+  ends. The release has no cooldown.
 
 Nothing the client sends is believed: the App Store transaction is looked up
 with the App Store Server API and the Play purchase token with
