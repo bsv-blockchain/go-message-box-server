@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
@@ -188,4 +189,31 @@ func TestMountLookup_ClientIPHeader(t *testing.T) {
 	if w := get("10.0.0.1:1", "6.6.6.6"); w.Code != http.StatusOK {
 		t.Fatalf("different header value = %d, want 200", w.Code)
 	}
+}
+
+// emptySubscriptions is a subscription store with nothing in it.
+type emptySubscriptions struct{}
+
+func (emptySubscriptions) GetSubscription(context.Context, string) (*mbstorage.Subscription, error) {
+	return nil, nil
+}
+
+func (emptySubscriptions) BindSubscription(context.Context, mbstorage.Subscription, *mbstorage.Subscription) error {
+	return nil
+}
+
+func (emptySubscriptions) UpdateSubscriptionStatus(context.Context, string, mbstorage.SubscriptionStatus, time.Time) error {
+	return nil
+}
+
+func (emptySubscriptions) MarkSubscriptionReleased(context.Context, string, time.Time) error {
+	return nil
+}
+
+func (emptySubscriptions) ListSubscriptionsByHandle(context.Context, string) ([]mbstorage.Subscription, error) {
+	return []mbstorage.Subscription{}, nil
+}
+
+func (emptySubscriptions) ListLapsedSubscriptions(context.Context, time.Time, int) ([]mbstorage.Subscription, error) {
+	return []mbstorage.Subscription{}, nil
 }

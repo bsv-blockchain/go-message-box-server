@@ -56,8 +56,8 @@ func newPurchaseEnv(t *testing.T) *purchaseEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// EnablePurchases has to come before LookupRoutes builds the mux, so the
-	// lookup env is built by hand here rather than through newLookupEnv.
+	// The two route sets are mounted side by side as main does, so the lookup
+	// env is built by hand here rather than through newLookupEnv.
 	e.lookupEnv = &lookupEnv{t: t, srv: setupTestServer(t), clock: time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)}
 	e.store = e.srv.Store.(*fakeStore)
 	e.srv.EnableLookup(LookupConfig{Domain: testDomain, Host: "https://mb.example.com", Cooldown: 30 * 24 * time.Hour}, e.store)
@@ -68,7 +68,9 @@ func newPurchaseEnv(t *testing.T) *purchaseEnv {
 		PushAuth:      e.auth,
 	}, e.store)
 	e.srv.now = e.now
-	e.mux = e.srv.LookupRoutes()
+	e.mux = http.NewServeMux()
+	e.mux.Handle("/", e.srv.LookupRoutes())
+	e.mux.Handle("/api/store/", e.srv.PurchaseRoutes())
 	return e
 }
 
@@ -457,11 +459,13 @@ func TestSweep_LeavesHandleItNoLongerPaysFor(t *testing.T) {
 }
 
 func TestPurchases_OffByDefault(t *testing.T) {
-	// Without EnablePurchases the registry grants names as before, and the
-	// notification routes do not exist.
+	// Without EnablePurchases the registry grants names as before.
 	e := newLookupEnv(t)
 	wantStatus(t, e.put(testKey(t), "deggen", e.now(), nil), 201, "")
-	if w := e.do("POST", "/api/store/apple/notifications", []byte(`{}`)); w.Code == 200 || w.Code == 400 {
-		t.Fatalf("notification route mounted without purchases: %d", w.Code)
-	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("PurchaseRoutes without EnablePurchases did not panic")
+		}
+	}()
+	e.srv.PurchaseRoutes()
 }

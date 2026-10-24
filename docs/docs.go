@@ -159,6 +159,7 @@ const docTemplate = `{
         },
         "/api/handle": {
             "put": {
+                "description": "Body is the bare certificate, or {\"certificate\": {...}, \"purchase\": {\"store\": \"app-store\"|\"google-play\", \"productId\", \"transactionId\", \"token\"}}. A purchase is needed to register a paid handle; updates and releases never need one.",
                 "consumes": [
                     "application/json"
                 ],
@@ -171,13 +172,12 @@ const docTemplate = `{
                 "summary": "Register, update or release a handle",
                 "parameters": [
                     {
-                        "description": "Self-signed profile certificate",
-                        "name": "certificate",
+                        "description": "Self-signed profile certificate, bare or with a purchase",
+                        "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/handlers.PutHandleRequest"
                         }
                     }
                 ],
@@ -197,13 +197,31 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "ERR_INVALID_CERTIFICATE, ERR_INVALID_HANDLE, ERR_PURCHASE_INVALID",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "402": {
+                        "description": "ERR_PURCHASE_REQUIRED, ERR_PURCHASE_INACTIVE",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "409": {
-                        "description": "Conflict",
+                        "description": "registry conflicts, ERR_PURCHASE_TIER_MISMATCH, ERR_PURCHASE_USED",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "ERR_STORE_UNAVAILABLE",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -299,6 +317,70 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/store/apple/notifications": {
+            "post": {
+                "description": "Apple posts {signedPayload}. The subscription it names is looked up again with the App Store Server API; nothing in the payload is trusted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "purchases"
+                ],
+                "summary": "App Store Server Notifications V2",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/store/google/notifications": {
+            "post": {
+                "description": "The purchase token it names is looked up again with purchases.subscriptionsv2.get; nothing in the message is trusted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "purchases"
+                ],
+                "summary": "Google Play real-time developer notifications (Pub/Sub push)",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -1088,6 +1170,17 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.PutHandleRequest": {
+            "type": "object",
+            "properties": {
+                "certificate": {
+                    "type": "object"
+                },
+                "purchase": {
+                    "$ref": "#/definitions/purchases.Purchase"
+                }
+            }
+        },
         "handlers.QuoteEntry": {
             "description": "Quote for one recipient in batch",
             "type": "object",
@@ -1302,6 +1395,23 @@ const docTemplate = `{
                 "status": {
                     "type": "string",
                     "example": "success"
+                }
+            }
+        },
+        "purchases.Purchase": {
+            "type": "object",
+            "properties": {
+                "productId": {
+                    "type": "string"
+                },
+                "store": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "transactionId": {
+                    "type": "string"
                 }
             }
         }

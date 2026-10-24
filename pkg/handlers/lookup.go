@@ -74,10 +74,6 @@ func (s *Server) LookupRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/handle/available/{$}", availableWithoutHandle)
 	mux.HandleFunc("GET /api/handle/{query}", s.SearchHandles)
 	mux.HandleFunc("GET /api/identityKey/{pubkey}", s.LookupIdentityKey)
-	if s.purchase != nil {
-		mux.HandleFunc("POST /api/store/apple/notifications", s.AppleNotification)
-		mux.HandleFunc("POST /api/store/google/notifications", s.GoogleNotification)
-	}
 	return mux
 }
 

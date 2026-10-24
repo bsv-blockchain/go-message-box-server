@@ -60,6 +60,15 @@ type Config struct {
 	// authentication signal.
 	ClientIPHeader string
 
+	// Paid handles (optional; needs the paymail profile lookup). With
+	// HandlePurchasesRequired every handle the wallet does not generate for
+	// free needs a verified store subscription. A store left unconfigured is
+	// refused, never waved through.
+	HandlePurchasesRequired bool
+	HandleGrace             time.Duration
+	Apple                   AppleStoreConfig
+	Google                  GooglePlayConfig
+
 	// POST /listMessages pagination bounds. Defaults match the TS reference
 	// server's "standard" resource profile. -1 means no cap on any of the four,
 	// including ListDefaultLimit: handlers.parseListPagination substitutes the
@@ -69,6 +78,88 @@ type Config struct {
 	ListMaxLimit         int
 	ListMaxOffset        int
 	ListMaxResponseBytes int
+}
+
+// AppleStoreConfig is an App Store Connect in-app purchase key. Configured
+// reports whether App Store purchases are accepted at all.
+type AppleStoreConfig struct {
+	IssuerID       string
+	KeyID          string
+	PrivateKey     string // PEM contents of the .p8 file
+	PrivateKeyPath string // or a path to it
+	BundleID       string
+	Environments   []string // Production, Sandbox; tried in order
+}
+
+// Configured reports whether App Store purchases are accepted.
+func (a AppleStoreConfig) Configured() bool { return a.BundleID != "" }
+
+// GooglePlayConfig is a Play Developer API service account and the Pub/Sub
+// push authentication for real-time developer notifications.
+type GooglePlayConfig struct {
+	PackageName          string
+	ServiceAccountJSON   string
+	ServiceAccountPath   string
+	AllowTestPurchases   bool
+	PubSubAudience       string // the push subscription's OIDC audience; empty skips the check
+	PubSubServiceAccount string // the push subscription's service account email
+}
+
+// Configured reports whether Google Play purchases are accepted.
+func (g GooglePlayConfig) Configured() bool { return g.PackageName != "" }
+
+// maxGraceDays caps HANDLE_GRACE_DAYS for the same reason as maxCooldownDays.
+const maxGraceDays = 3650
+
+// loadPurchases reads the paid-handle settings.
+func loadPurchases(cfg *Config) error {
+	cfg.HandlePurchasesRequired = strings.EqualFold(strings.TrimSpace(os.Getenv("HANDLE_PURCHASES_REQUIRED")), "true")
+	graceDays := min(max(getEnvInt("HANDLE_GRACE_DAYS", 14), 0), maxGraceDays)
+	cfg.HandleGrace = time.Duration(graceDays) * 24 * time.Hour
+
+	cfg.Apple = AppleStoreConfig{
+		IssuerID:       strings.TrimSpace(os.Getenv("APPLE_ISSUER_ID")),
+		KeyID:          strings.TrimSpace(os.Getenv("APPLE_KEY_ID")),
+		PrivateKey:     os.Getenv("APPLE_PRIVATE_KEY"),
+		PrivateKeyPath: strings.TrimSpace(os.Getenv("APPLE_PRIVATE_KEY_PATH")),
+		BundleID:       strings.TrimSpace(os.Getenv("APPLE_BUNDLE_ID")),
+	}
+	for _, env := range strings.Split(getEnv("APPLE_ENVIRONMENTS", "Production"), ",") {
+		switch env = strings.TrimSpace(env); env {
+		case "":
+		case "Production", "Sandbox":
+			cfg.Apple.Environments = append(cfg.Apple.Environments, env)
+		default:
+			return fmt.Errorf("APPLE_ENVIRONMENTS entry %q is not Production or Sandbox", env)
+		}
+	}
+	if a := cfg.Apple; a.Configured() {
+		if a.IssuerID == "" || a.KeyID == "" || (a.PrivateKey == "" && a.PrivateKeyPath == "") {
+			return fmt.Errorf("APPLE_BUNDLE_ID needs APPLE_ISSUER_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY or APPLE_PRIVATE_KEY_PATH")
+		}
+	}
+
+	cfg.Google = GooglePlayConfig{
+		PackageName:          strings.TrimSpace(os.Getenv("GOOGLE_PLAY_PACKAGE_NAME")),
+		ServiceAccountJSON:   os.Getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"),
+		ServiceAccountPath:   strings.TrimSpace(os.Getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_PATH")),
+		AllowTestPurchases:   strings.EqualFold(strings.TrimSpace(os.Getenv("GOOGLE_PLAY_ALLOW_TEST_PURCHASES")), "true"),
+		PubSubAudience:       strings.TrimSpace(os.Getenv("GOOGLE_PUBSUB_AUDIENCE")),
+		PubSubServiceAccount: strings.TrimSpace(os.Getenv("GOOGLE_PUBSUB_SERVICE_ACCOUNT")),
+	}
+	if g := cfg.Google; g.Configured() && g.ServiceAccountJSON == "" && g.ServiceAccountPath == "" {
+		return fmt.Errorf("GOOGLE_PLAY_PACKAGE_NAME needs GOOGLE_PLAY_SERVICE_ACCOUNT_JSON or GOOGLE_PLAY_SERVICE_ACCOUNT_PATH")
+	}
+
+	if cfg.HandlePurchasesRequired {
+		if cfg.PaymailDomain == "" {
+			return fmt.Errorf("HANDLE_PURCHASES_REQUIRED needs the handle registry (PAYMAIL_DOMAIN)")
+		}
+		if !cfg.Apple.Configured() && !cfg.Google.Configured() {
+			return fmt.Errorf("HANDLE_PURCHASES_REQUIRED needs APPLE_BUNDLE_ID or GOOGLE_PLAY_PACKAGE_NAME: with neither store configured no paid handle could ever be registered")
+		}
+	}
+	return nil
 }
 
 // Load reads configuration from environment variables.
@@ -146,6 +237,10 @@ func Load() (*Config, error) {
 		}
 		seenAdmin[k] = true
 		cfg.AdminIdentityKeys = append(cfg.AdminIdentityKeys, k)
+	}
+
+	if err := loadPurchases(cfg); err != nil {
+		return nil, err
 	}
 
 	listDefaultLimit, err := getEnvListBound("LIST_DEFAULT_LIMIT", 1000)

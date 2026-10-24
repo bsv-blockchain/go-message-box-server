@@ -64,6 +64,21 @@ func (s *Server) EnablePurchases(c PurchaseConfig, subs storage.SubscriptionStor
 	s.purchase, s.subs = &c, subs
 }
 
+// PurchaseRoutes returns the store notification routes. They are public — the
+// stores call them — but are not rate limited per client address like the
+// lookup routes: Pub/Sub pushes from a handful of Google addresses in bursts,
+// and every notification only makes this server ask the store again.
+// EnablePurchases must have been called.
+func (s *Server) PurchaseRoutes() *http.ServeMux {
+	if s.purchase == nil || s.subs == nil || s.handles == nil {
+		panic("handlers: PurchaseRoutes called before EnableLookup and EnablePurchases")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/store/apple/notifications", s.AppleNotification)
+	mux.HandleFunc("POST /api/store/google/notifications", s.GoogleNotification)
+	return mux
+}
+
 // splitPutBody separates the certificate from a purchase sent with it. A body
 // whose top-level object has a "certificate" member is the envelope; anything
 // else is the certificate itself.
