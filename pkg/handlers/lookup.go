@@ -74,6 +74,10 @@ func (s *Server) LookupRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/handle/available/{$}", availableWithoutHandle)
 	mux.HandleFunc("GET /api/handle/{query}", s.SearchHandles)
 	mux.HandleFunc("GET /api/identityKey/{pubkey}", s.LookupIdentityKey)
+	if s.purchase != nil {
+		mux.HandleFunc("POST /api/store/apple/notifications", s.AppleNotification)
+		mux.HandleFunc("POST /api/store/google/notifications", s.GoogleNotification)
+	}
 	return mux
 }
 
@@ -142,28 +146,39 @@ func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
 }
 
 // PutHandle registers, updates or releases a handle. The certificate is the
-// authorisation: it is signed by the identity key and names the handle.
+// authorisation: it is signed by the identity key and names the handle. When
+// paid handles are on, registering a handle the app does not generate for free
+// also takes a store subscription: the body is then {certificate, purchase}.
 // @Summary Register, update or release a handle
+// @Description Body is the bare certificate, or {"certificate": {...}, "purchase": {"store": "app-store"|"google-play", "productId", "transactionId", "token"}}. A purchase is needed to register a paid handle; updates and releases never need one.
 // @Tags lookup
 // @Accept json
 // @Produce json
-// @Param certificate body map[string]interface{} true "Self-signed profile certificate"
+// @Param request body PutHandleRequest true "Self-signed profile certificate, bare or with a purchase"
 // @Success 200 {object} map[string]interface{}
 // @Success 201 {object} map[string]interface{}
-// @Failure 400 {object} ErrorResponse
-// @Failure 409 {object} ErrorResponse
+// @Failure 400 {object} ErrorResponse "ERR_INVALID_CERTIFICATE, ERR_INVALID_HANDLE, ERR_PURCHASE_INVALID"
+// @Failure 402 {object} ErrorResponse "ERR_PURCHASE_REQUIRED, ERR_PURCHASE_INACTIVE"
+// @Failure 409 {object} ErrorResponse "registry conflicts, ERR_PURCHASE_TIER_MISMATCH, ERR_PURCHASE_USED"
+// @Failure 413 {object} ErrorResponse
+// @Failure 502 {object} ErrorResponse "ERR_STORE_UNAVAILABLE"
 // @Router /api/handle [put]
 func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, profilecert.MaxBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPutBody))
 	if err != nil {
 		// Only the cap is a 413; a body that stops arriving part-way through
 		// is a request the client failed to make.
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "Certificate larger than 16 KB.")
+			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "Request larger than 64 KB.")
 			return
 		}
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_CERTIFICATE", "Could not read the request body.")
+		return
+	}
+	body, purchase := splitPutBody(body)
+	if len(body) > profilecert.MaxBody {
+		writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "Certificate larger than 16 KB.")
 		return
 	}
 	now := s.clock()
@@ -206,6 +221,10 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 1-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
+		return
+	}
+
+	if !s.requirePurchase(w, r, p.Handle, p.IdentityKey, purchase, now) {
 		return
 	}
 

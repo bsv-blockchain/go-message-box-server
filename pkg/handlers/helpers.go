@@ -41,6 +41,10 @@ type Server struct {
 
 	lookup  *LookupConfig
 	handles storage.HandleStore // nil unless EnableLookup was called
+	// purchase and subs are nil unless EnablePurchases was called, and then
+	// every handle the app does not generate for free needs a subscription.
+	purchase *PurchaseConfig
+	subs     storage.SubscriptionStore
 	// now is a test seam; nil means time.Now. Handlers call it from whatever
 	// goroutine serves the request, so it is set once before serving and never
 	// reassigned, and what it closes over must be safe to read concurrently.
