@@ -58,7 +58,7 @@ func (s *Store) GetSubscription(ctx context.Context, id string) (*storage.Subscr
 	var d subscriptionDoc
 	err := s.db.Collection(subscriptionsColl).FindOne(ctx, bson.M{"_id": id}).Decode(&d)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // SubscriptionStore contract: no row is (nil, nil)
 	}
 	if err != nil {
 		return nil, err
@@ -89,7 +89,7 @@ func (s *Store) BindSubscription(ctx context.Context, sub storage.Subscription, 
 	set["handle"], set["identityKey"], set["updatedAt"] = sub.Handle, sub.IdentityKey, msUTC(sub.UpdatedAt)
 	res, err := coll.UpdateOne(ctx,
 		bson.M{"_id": sub.ID, "handle": prev.Handle, "identityKey": prev.IdentityKey},
-		bson.M{"$set": set, "$unset": bson.M{"releasedAt": ""}},
+		bson.M{opSet: set, "$unset": bson.M{"releasedAt": ""}},
 	)
 	if err != nil {
 		return fmt.Errorf("bind subscription %s: %w", sub.ID, err)
@@ -104,12 +104,12 @@ func (s *Store) BindSubscription(ctx context.Context, sub storage.Subscription, 
 func (s *Store) UpdateSubscriptionStatus(ctx context.Context, id string, st storage.SubscriptionStatus, now time.Time) error {
 	set := statusFields(st)
 	set["updatedAt"] = msUTC(now)
-	return s.updateSubscription(ctx, id, bson.M{"$set": set})
+	return s.updateSubscription(ctx, id, bson.M{opSet: set})
 }
 
 // MarkSubscriptionReleased implements storage.SubscriptionStore.
 func (s *Store) MarkSubscriptionReleased(ctx context.Context, id string, at time.Time) error {
-	return s.updateSubscription(ctx, id, bson.M{"$set": bson.M{"releasedAt": msUTC(at), "updatedAt": msUTC(at)}})
+	return s.updateSubscription(ctx, id, bson.M{opSet: bson.M{"releasedAt": msUTC(at), "updatedAt": msUTC(at)}})
 }
 
 func (s *Store) updateSubscription(ctx context.Context, id string, update bson.M) error {

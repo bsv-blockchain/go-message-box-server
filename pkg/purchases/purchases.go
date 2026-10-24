@@ -45,13 +45,14 @@ type Purchase struct {
 
 // Verified is a purchase the store vouched for.
 type Verified struct {
+	storage.SubscriptionStatus
+
 	// StoreID identifies the subscription for its whole life: Apple's
 	// originalTransactionId, or Google's purchase token.
 	StoreID string
 	// LinkedStoreID is the Google purchase token this one replaced (an
 	// upgrade, downgrade or resubscription), if any.
 	LinkedStoreID string
-	storage.SubscriptionStatus
 }
 
 // Verifier is one store.

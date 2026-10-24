@@ -309,10 +309,12 @@ func TestLoad_AdminIdentityKeys(t *testing.T) {
 
 func TestLoad_Purchases(t *testing.T) {
 	t.Setenv("SERVER_PRIVATE_KEY", "01")
-	for _, k := range []string{"HANDLE_PURCHASES_REQUIRED", "HANDLE_GRACE_DAYS", "PAYMAIL_DOMAIN", "PAYMAIL_HOST",
+	for _, k := range []string{
+		"HANDLE_PURCHASES_REQUIRED", "HANDLE_GRACE_DAYS", "PAYMAIL_DOMAIN", "PAYMAIL_HOST",
 		"APPLE_ISSUER_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY", "APPLE_PRIVATE_KEY_PATH", "APPLE_BUNDLE_ID", "APPLE_ENVIRONMENTS",
 		"GOOGLE_PLAY_PACKAGE_NAME", "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "GOOGLE_PLAY_SERVICE_ACCOUNT_PATH",
-		"GOOGLE_PLAY_ALLOW_TEST_PURCHASES", "GOOGLE_PUBSUB_AUDIENCE", "GOOGLE_PUBSUB_SERVICE_ACCOUNT"} {
+		"GOOGLE_PLAY_ALLOW_TEST_PURCHASES", "GOOGLE_PUBSUB_AUDIENCE", "GOOGLE_PUBSUB_SERVICE_ACCOUNT",
+	} {
 		t.Setenv(k, "")
 	}
 
@@ -332,14 +334,14 @@ func TestLoad_Purchases(t *testing.T) {
 	t.Setenv("PAYMAIL_DOMAIN", "example.com")
 	t.Setenv("PAYMAIL_HOST", "https://mb.example.com")
 	t.Setenv("HANDLE_PURCHASES_REQUIRED", "true")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "APPLE_BUNDLE_ID or GOOGLE_PLAY_PACKAGE_NAME") {
-		t.Fatalf("required without stores: %v", err)
+	if _, loadErr := Load(); loadErr == nil || !strings.Contains(loadErr.Error(), "APPLE_BUNDLE_ID or GOOGLE_PLAY_PACKAGE_NAME") {
+		t.Fatalf("required without stores: %v", loadErr)
 	}
 
 	// A half-configured store is refused.
 	t.Setenv("APPLE_BUNDLE_ID", "org.bsvblockchain.wallet")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "APPLE_ISSUER_ID") {
-		t.Fatalf("apple without key: %v", err)
+	if _, loadErr := Load(); loadErr == nil || !strings.Contains(loadErr.Error(), "APPLE_ISSUER_ID") {
+		t.Fatalf("apple without key: %v", loadErr)
 	}
 	t.Setenv("APPLE_ISSUER_ID", "issuer")
 	t.Setenv("APPLE_KEY_ID", "KEY")
@@ -356,8 +358,8 @@ func TestLoad_Purchases(t *testing.T) {
 	}
 
 	t.Setenv("GOOGLE_PLAY_PACKAGE_NAME", "org.bsvblockchain.wallet")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GOOGLE_PLAY_SERVICE_ACCOUNT") {
-		t.Fatalf("google without credentials: %v", err)
+	if _, loadErr := Load(); loadErr == nil || !strings.Contains(loadErr.Error(), "GOOGLE_PLAY_SERVICE_ACCOUNT") {
+		t.Fatalf("google without credentials: %v", loadErr)
 	}
 	t.Setenv("GOOGLE_PLAY_SERVICE_ACCOUNT_PATH", "/secrets/play.json")
 	if cfg, err = Load(); err != nil || !cfg.Google.Configured() {
@@ -365,13 +367,13 @@ func TestLoad_Purchases(t *testing.T) {
 	}
 
 	t.Setenv("APPLE_ENVIRONMENTS", "Staging")
-	if _, err := Load(); err == nil {
+	if _, loadErr := Load(); loadErr == nil {
 		t.Fatal("unknown Apple environment accepted")
 	}
 	t.Setenv("APPLE_ENVIRONMENTS", "")
 
 	t.Setenv("PAYMAIL_DOMAIN", "")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PAYMAIL_DOMAIN") {
-		t.Fatalf("required without the registry: %v", err)
+	if _, loadErr := Load(); loadErr == nil || !strings.Contains(loadErr.Error(), "PAYMAIL_DOMAIN") {
+		t.Fatalf("required without the registry: %v", loadErr)
 	}
 }

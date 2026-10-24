@@ -111,5 +111,5 @@ var _ storage.SubscriptionStore = (*fakeStore)(nil)
 // The fake must keep the contract the real backend does, or the handler tests
 // built on it prove nothing.
 func TestFakeSubscriptionStoreConformance(t *testing.T) {
-	storagetest.RunSubscriptionStoreTests(t, func(t *testing.T) storage.SubscriptionStore { return newFakeStore() })
+	storagetest.RunSubscriptionStoreTests(t, func(_ *testing.T) storage.SubscriptionStore { return newFakeStore() })
 }

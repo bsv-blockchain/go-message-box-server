@@ -195,7 +195,7 @@ func TestMountLookup_ClientIPHeader(t *testing.T) {
 type emptySubscriptions struct{}
 
 func (emptySubscriptions) GetSubscription(context.Context, string) (*mbstorage.Subscription, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // SubscriptionStore contract: no row is (nil, nil)
 }
 
 func (emptySubscriptions) BindSubscription(context.Context, mbstorage.Subscription, *mbstorage.Subscription) error {

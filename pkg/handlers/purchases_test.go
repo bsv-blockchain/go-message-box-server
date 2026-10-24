@@ -32,6 +32,7 @@ const (
 // purchaseEnv is a lookup env with paid handles on, both stores stubbed.
 type purchaseEnv struct {
 	*lookupEnv
+
 	apple  *purchasestest.AppleStub
 	google *purchasestest.GoogleStub
 	store  *fakeStore
@@ -90,8 +91,10 @@ func (e *purchaseEnv) putPaid(key *ec.PrivateKey, handle string, issuedAt time.T
 // appleSub puts an active subscription in the Apple stub, expiring a month
 // after the env's clock, and returns the purchase the wallet would send.
 func (e *purchaseEnv) appleSub(txID, product string, status int) (*purchases.Purchase, purchasestest.AppleTx) {
-	tx := purchasestest.AppleTx{TransactionID: txID, OriginalTransactionID: "orig-" + txID, ProductID: product,
-		Expires: e.now().Add(30 * 24 * time.Hour), Status: status, AutoRenewOn: true}
+	tx := purchasestest.AppleTx{
+		TransactionID: txID, OriginalTransactionID: "orig-" + txID, ProductID: product,
+		Expires: e.now().Add(30 * 24 * time.Hour), Status: status, AutoRenewOn: true,
+	}
 	e.apple.Put(tx)
 	return &purchases.Purchase{Store: storage.StoreAppStore, ProductID: product, TransactionID: txID, Token: tx.SignedTransaction(e.t)}, tx
 }
@@ -199,7 +202,10 @@ func TestPaidHandle_Rejects(t *testing.T) {
 		big["f"+string(rune('a'+i))] = strings.Repeat("x", 1000)
 	}
 	cert := certtest.Profile(t, key, "deggen", testDomain, now, big)
-	body, _ := json.Marshal(PutHandleRequest{Certificate: cert, Purchase: p6})
+	body, err := json.Marshal(PutHandleRequest{Certificate: cert, Purchase: p6})
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantStatus(t, e.do("PUT", "/api/handle", body), 413, "ERR_BODY_TOO_LARGE")
 }
 
@@ -299,7 +305,10 @@ func TestAppleNotification_IgnoresWhatItCannotUse(t *testing.T) {
 	if e.sub("app-store:orig-6001") != nil {
 		t.Fatal("a notification created a subscription")
 	}
-	ping, _ := json.Marshal(map[string]string{"signedPayload": purchasestest.SignJWS(t, map[string]any{"notificationType": "TEST", "data": map[string]any{}})})
+	ping, err := json.Marshal(map[string]string{"signedPayload": purchasestest.SignJWS(t, map[string]any{"notificationType": "TEST", "data": map[string]any{}})})
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantStatus(t, e.do("POST", "/api/store/apple/notifications", ping), 200, "")
 	wantStatus(t, e.do("POST", "/api/store/apple/notifications", []byte(`{}`)), 400, "ERR_INVALID_NOTIFICATION")
 	wantStatus(t, e.do("POST", "/api/store/apple/notifications", []byte(`{"signedPayload":"x.y.z"}`)), 400, "ERR_INVALID_NOTIFICATION")
@@ -317,11 +326,17 @@ func (e *purchaseEnv) googlePush(pkg, token string) *httptest.ResponseRecorder {
 	} else {
 		n["testNotification"] = map[string]any{"version": "1.0"}
 	}
-	data, _ := json.Marshal(n)
-	body, _ := json.Marshal(map[string]any{
+	data, err := json.Marshal(n)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
 		"message":      map[string]any{"data": base64.StdEncoding.EncodeToString(data), "messageId": "136969346945"},
 		"subscription": "projects/bsv-wallet/subscriptions/play-rtdn",
 	})
+	if err != nil {
+		e.t.Fatal(err)
+	}
 	return e.do("POST", "/api/store/google/notifications", body)
 }
 

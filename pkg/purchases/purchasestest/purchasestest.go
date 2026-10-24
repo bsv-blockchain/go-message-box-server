@@ -46,7 +46,10 @@ func SignJWS(t testing.TB, payload any) string {
 
 func signWith(t testing.TB, key *ecdsa.PrivateKey, header, payload any) string {
 	t.Helper()
-	h, _ := json.Marshal(header)
+	h, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +65,16 @@ func signWith(t testing.TB, key *ecdsa.PrivateKey, header, payload any) string {
 	r.FillBytes(sig[:32])
 	s.FillBytes(sig[32:])
 	return signing + "." + enc.EncodeToString(sig)
+}
+
+// writeJSON answers with v, or a 500 when v cannot be encoded.
+func writeJSON(w http.ResponseWriter, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(b)
 }
 
 // AppleTx is one App Store subscription as the stub serves it.
@@ -123,7 +136,10 @@ func (tx AppleTx) Notification(t testing.TB, notificationType string) []byte {
 			"signedTransactionInfo": SignJWS(t, tx.payload()),
 		},
 	}
-	b, _ := json.Marshal(map[string]string{"signedPayload": SignJWS(t, payload)})
+	b, err := json.Marshal(map[string]string{"signedPayload": SignJWS(t, payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return b
 }
 
@@ -228,7 +244,7 @@ func (s *AppleStub) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch kind {
 	case "transactions":
-		_ = json.NewEncoder(w).Encode(map[string]string{"signedTransactionInfo": SignJWS(s.t, tx.payload())})
+		writeJSON(w, map[string]string{"signedTransactionInfo": SignJWS(s.t, tx.payload())})
 	case "subscriptions":
 		autoRenew := 0
 		if tx.AutoRenewOn {
@@ -238,7 +254,7 @@ func (s *AppleStub) serve(w http.ResponseWriter, r *http.Request) {
 			"originalTransactionId": tx.OriginalTransactionID, "autoRenewProductId": tx.ProductID,
 			"autoRenewStatus": autoRenew, "environment": tx.Environment,
 		})
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"environment": tx.Environment, "bundleId": tx.BundleID, "appAppleId": 6470000000,
 			"data": []any{map[string]any{
 				"subscriptionGroupIdentifier": "22508849",
@@ -306,7 +322,7 @@ func (s *GoogleStub) serve(w http.ResponseWriter, r *http.Request) {
 	writeErr := func(code int, msg string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "message": msg}})
+		writeJSON(w, map[string]any{"error": map[string]any{"code": code, "message": msg}})
 	}
 	if s.Fail != 0 {
 		writeErr(s.Fail, "stub failure")
@@ -339,5 +355,5 @@ func (s *GoogleStub) serve(w http.ResponseWriter, r *http.Request) {
 		body["testPurchase"] = map[string]any{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	writeJSON(w, body)
 }

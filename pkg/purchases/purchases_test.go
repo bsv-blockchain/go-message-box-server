@@ -37,8 +37,13 @@ func TestProductTiers(t *testing.T) {
 		product, plan string
 		want          int
 	}{
-		{playLen6, "monthly", 6}, {playLen6, "yearly", 6}, {"org.bsvblockchain.wallet.handle.len7", "monthly", 7},
-		{playLen6, "weekly", 0}, {playLen6, "", 0}, {iosLen6, "monthly", 0}, {"org.bsvblockchain.wallet.handle.len9", "monthly", 0},
+		{playLen6, "monthly", 6},
+		{playLen6, "yearly", 6},
+		{"org.bsvblockchain.wallet.handle.len7", "monthly", 7},
+		{playLen6, "weekly", 0},
+		{playLen6, "", 0},
+		{iosLen6, "monthly", 0},
+		{"org.bsvblockchain.wallet.handle.len9", "monthly", 0},
 	}
 	for _, c := range google {
 		if got := purchases.GoogleProductTier(c.product, c.plan); got != c.want {
@@ -55,11 +60,16 @@ func TestEntitled(t *testing.T) {
 		expires time.Time
 		want    bool
 	}{
-		{storage.SubActive, later, true}, {storage.SubActive, earlier, false},
-		{storage.SubCanceled, later, true}, {storage.SubCanceled, earlier, false},
+		{storage.SubActive, later, true},
+		{storage.SubActive, earlier, false},
+		{storage.SubCanceled, later, true},
+		{storage.SubCanceled, earlier, false},
 		{storage.SubGrace, earlier, true},
-		{storage.SubOnHold, later, false}, {storage.SubExpired, later, false}, {storage.SubRevoked, later, false},
-		{storage.SubPending, later, false}, {storage.SubWrongTier, later, false},
+		{storage.SubOnHold, later, false},
+		{storage.SubExpired, later, false},
+		{storage.SubRevoked, later, false},
+		{storage.SubPending, later, false},
+		{storage.SubWrongTier, later, false},
 	}
 	for _, c := range cases {
 		if got := purchases.Entitled(storage.SubscriptionStatus{State: c.state, ExpiresAt: c.expires}, now); got != c.want {

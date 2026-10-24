@@ -139,7 +139,7 @@ func RunSubscriptionStoreTests(t *testing.T, newStore NewSubscriptionStoreFunc) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids := []string{}
+		ids := make([]string, 0, len(got))
 		for _, x := range got {
 			ids = append(ids, x.StoreID)
 		}
@@ -151,8 +151,8 @@ func RunSubscriptionStoreTests(t *testing.T, newStore NewSubscriptionStoreFunc) 
 
 	t.Run("ListLapsed", func(t *testing.T) {
 		s := newStore(t)
-		for i, d := range []time.Duration{3, 1, 2, 10} {
-			x := sub(string(rune('a'+i)), "h"+string(rune('a'+i)), alice, handleT0.Add(d*time.Hour))
+		for i, hours := range []int{3, 1, 2, 10} {
+			x := sub(string(rune('a'+i)), "h"+string(rune('a'+i)), alice, handleT0.Add(time.Duration(hours)*time.Hour))
 			if err := s.BindSubscription(ctx, x, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -165,7 +165,7 @@ func RunSubscriptionStoreTests(t *testing.T, newStore NewSubscriptionStoreFunc) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids := []string{}
+		ids := make([]string, 0, len(got))
 		for _, x := range got {
 			ids = append(ids, x.StoreID)
 		}

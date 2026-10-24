@@ -101,8 +101,10 @@ func TestIsGenerated(t *testing.T) {
 			t.Errorf("IsGenerated(%q) = false, want true", h)
 		}
 	}
-	no := []string{"", "ableotter", "ableotter7", "ableotter007", "otter07", "able07", "sneakyotter07",
-		"ableotterx07", "xableotter07", "able.otter07", "able-otter07", "deggen", "07"}
+	no := []string{
+		"", "ableotter", "ableotter7", "ableotter007", "otter07", "able07", "sneakyotter07",
+		"ableotterx07", "xableotter07", "able.otter07", "able-otter07", "deggen", "07",
+	}
 	for _, h := range no {
 		if IsGenerated(h) {
 			t.Errorf("IsGenerated(%q) = true, want false", h)

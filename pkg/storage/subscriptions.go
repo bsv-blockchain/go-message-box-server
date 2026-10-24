@@ -65,14 +65,15 @@ type SubscriptionStatus struct {
 // per subscription, so the primary key is what stops a receipt paying for two
 // handles: a subscription is bound to a single handle at a time.
 type Subscription struct {
+	SubscriptionStatus
+
 	ID          string // SubscriptionID(Store, StoreID)
 	Store       string
 	StoreID     string
 	Handle      string
 	IdentityKey string
-	SubscriptionStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 	// ReleasedAt is set once the handle was released because the
 	// subscription lapsed, so the sweep stops coming back to it. Binding the
 	// subscription again clears it.

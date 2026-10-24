@@ -47,7 +47,7 @@ func TestEnablePurchases_MountsNotificationRoutes(t *testing.T) {
 		t.Fatalf("enablePurchases = %v, %v", h, err)
 	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/store/apple/notifications", strings.NewReader(`{}`)))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/store/apple/notifications", strings.NewReader(`{}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("apple notification route = %d, want 400 for an empty body", w.Code)
 	}

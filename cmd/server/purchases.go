@@ -21,7 +21,7 @@ func readSecret(value, path, name string) ([]byte, error) {
 	if value != "" {
 		return []byte(value), nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: the path is the operator's own secret-file setting
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
@@ -90,7 +90,7 @@ func (a *pubsubAuth) Authenticate(r *http.Request) error {
 // off. It needs the registry: the config already refuses one without the other.
 func enablePurchases(ctx context.Context, cfg *config.Config, srv *handlers.Server, store any) (http.Handler, error) {
 	if !cfg.HandlePurchasesRequired {
-		return nil, nil
+		return nil, nil //nolint:nilnil // (nil, nil) is the documented "feature off" result
 	}
 	subs, ok := store.(mbstorage.SubscriptionStore)
 	if !ok {

@@ -138,12 +138,12 @@ func (s *Server) requirePurchase(w http.ResponseWriter, r *http.Request, handle,
 		writeError(w, http.StatusPaymentRequired, "ERR_PURCHASE_INACTIVE", "That subscription is not active.")
 		return false
 	}
-	switch err := s.bindSubscription(r.Context(), p.Store, v, handle, identityKey, now); {
-	case errors.Is(err, errPurchaseUsed):
+	switch bindErr := s.bindSubscription(r.Context(), p.Store, v, handle, identityKey, now); {
+	case errors.Is(bindErr, errPurchaseUsed):
 		writeError(w, http.StatusConflict, "ERR_PURCHASE_USED", "That subscription already pays for another handle.")
 		return false
-	case err != nil:
-		s.writeStoreError(w, err)
+	case bindErr != nil:
+		s.writeStoreError(w, bindErr)
 		return false
 	}
 	return true
@@ -169,9 +169,9 @@ func (s *Server) bindSubscription(ctx context.Context, store string, v *purchase
 			return err
 		}
 		if cur != nil && (cur.Handle != handle || cur.IdentityKey != identityKey) {
-			held, err := s.handles.GetHandle(ctx, cur.Handle)
-			if err != nil {
-				return err
+			held, getErr := s.handles.GetHandle(ctx, cur.Handle)
+			if getErr != nil {
+				return getErr
 			}
 			if held.Active() && *held.IdentityKey == cur.IdentityKey {
 				return errPurchaseUsed

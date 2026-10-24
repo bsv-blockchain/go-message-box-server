@@ -123,6 +123,12 @@
                         "unparam"
                     ],
                     "path": "(_test\\.go$|pkg/storage/storagetest/|pkg/profilecert/certtest/)"
+                },
+                {
+                    "linters": [
+                        "misspell"
+                    ],
+                    "path": "pkg/handles/words\\.go$"
                 }
             ]
         },

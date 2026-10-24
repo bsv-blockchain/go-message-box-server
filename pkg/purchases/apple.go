@@ -94,11 +94,17 @@ func NewApple(cfg AppleConfig) (*Apple, error) {
 // token is the API's bearer: an ES256 JWT signed with the in-app purchase key.
 func (a *Apple) token() (string, error) {
 	now := a.cfg.Now()
-	header, _ := json.Marshal(map[string]string{"alg": "ES256", "kid": a.cfg.KeyID, "typ": "JWT"})
-	claims, _ := json.Marshal(map[string]any{
+	header, err := json.Marshal(map[string]string{"alg": "ES256", "kid": a.cfg.KeyID, "typ": "JWT"})
+	if err != nil {
+		return "", err
+	}
+	claims, err := json.Marshal(map[string]any{
 		"iss": a.cfg.IssuerID, "iat": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
 		"aud": "appstoreconnect-v1", "bid": a.cfg.BundleID,
 	})
+	if err != nil {
+		return "", err
+	}
 	enc := base64.RawURLEncoding
 	signing := enc.EncodeToString(header) + "." + enc.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signing))
@@ -130,20 +136,20 @@ func (a *Apple) get(ctx context.Context, env, path string, out any) error {
 	if err != nil {
 		return unavailable("apple: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return unavailable("apple: read response: %v", err)
 	}
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		if err := json.Unmarshal(body, out); err != nil {
 			return unavailable("apple: decode response: %v", err)
 		}
 		return nil
-	case resp.StatusCode == http.StatusNotFound:
+	case http.StatusNotFound:
 		return errNotFound
-	case resp.StatusCode == http.StatusBadRequest:
+	case http.StatusBadRequest:
 		// Apple's 400s here are a malformed transaction id: the client's fault.
 		return invalid("apple: %s", strings.TrimSpace(string(body)))
 	default:
