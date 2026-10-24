@@ -66,7 +66,7 @@ func TestSkeletonKeepsRegexMetacharacters(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	ok := []string{"deg", "deggen", "a.b-c_d", "abc123", "a23456789012345678901234567890bc"}
+	ok := []string{"d", "7", "de", "deg", "deggen", "a.b-c_d", "abc123", "a23456789012345678901234567890bc"}
 	for _, h := range ok {
 		if err := Validate(h); err != nil {
 			t.Errorf("Validate(%q) = %v, want nil", h, err)
@@ -75,7 +75,7 @@ func TestValidate(t *testing.T) {
 	// The last three are non-ASCII look-alikes of "admin"; the regex is
 	// ASCII-only, so they are rejected before the reserved check ever folds
 	// them (Skeleton("admİn") is "admln", the skeleton of "admin").
-	invalid := []string{"", "ab", ".abc", "abc.", "Deggen", "deg gen", "deg+gen", "dég", "a23456789012345678901234567890bcd",
+	invalid := []string{"", ".", "a.", "-a", ".abc", "abc.", "Deggen", "deg gen", "deg+gen", "dég", "a23456789012345678901234567890bcd",
 		"admın", "admİn", "ＡＤＭＩＮ"}
 	for _, h := range invalid {
 		if err := Validate(h); !errors.Is(err, ErrInvalidHandle) {
@@ -86,6 +86,33 @@ func TestValidate(t *testing.T) {
 	for _, h := range reserved {
 		if err := Validate(h); !errors.Is(err, ErrReservedHandle) {
 			t.Errorf("Validate(%q) = %v, want ErrReservedHandle", h, err)
+		}
+	}
+}
+
+// The app's isGeneratedPattern (src/handles/generator.ts): adjective + animal +
+// exactly two digits, where some split of the letters is one of each.
+func TestIsGenerated(t *testing.T) {
+	yes := []string{"ableotter07", "ableox00", "absentzebra99", "AbleOtter07"}
+	for _, h := range yes {
+		if !IsGenerated(h) {
+			t.Errorf("IsGenerated(%q) = false, want true", h)
+		}
+	}
+	no := []string{"", "ableotter", "ableotter7", "ableotter007", "otter07", "able07", "sneakyotter07",
+		"ableotterx07", "xableotter07", "able.otter07", "able-otter07", "deggen", "07"}
+	for _, h := range no {
+		if IsGenerated(h) {
+			t.Errorf("IsGenerated(%q) = true, want false", h)
+		}
+	}
+}
+
+func TestTier(t *testing.T) {
+	cases := map[string]int{"a": 1, "ab": 2, "abc": 3, "abcd": 4, "abcde": 5, "abcdef": 6, "abcdefg": 7, "abcdefghijklmnop": 7}
+	for h, want := range cases {
+		if got := Tier(h); got != want {
+			t.Errorf("Tier(%q) = %d, want %d", h, got, want)
 		}
 	}
 }

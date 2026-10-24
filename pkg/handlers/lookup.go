@@ -205,7 +205,7 @@ func (s *Server) PutHandle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "ERR_HANDLE_RESERVED", "That handle is reserved.")
 		return
 	case err != nil:
-		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 3-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_HANDLE", "Handles are 1-32 characters of a-z 0-9 . _ - and start and end with a letter or digit.")
 		return
 	}
 
