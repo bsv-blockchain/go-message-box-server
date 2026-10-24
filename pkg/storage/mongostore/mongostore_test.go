@@ -65,6 +65,22 @@ func TestHandleConformance_Mongo(t *testing.T) {
 	})
 }
 
+// TestSubscriptionConformance_Mongo runs the store-subscription contract.
+func TestSubscriptionConformance_Mongo(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	storagetest.RunSubscriptionStoreTests(t, func(t *testing.T) storage.SubscriptionStore {
+		return newMongo(t, uri, database).(*Store)
+	})
+}
+
 // TestPageMessages_FetchLimitLessThanOne pins storage.MessagePager's
 // documented contract for out-of-range FetchLimit: the MongoDB driver's
 // options.Find().SetLimit(n) treats n == 0 (and negative n) as "no limit",

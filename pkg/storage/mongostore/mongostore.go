@@ -27,7 +27,9 @@ const (
 	feesColl        = "server_fees"
 	devicesColl     = "device_registrations"
 	handlesColl     = "handles"
-	countersColl    = "counters"
+	// subscriptionsColl holds the store subscriptions that pay for handles.
+	subscriptionsColl = "handle_subscriptions"
+	countersColl      = "counters"
 )
 
 // Store is a MongoDB-backed storage.Store.
@@ -112,6 +114,12 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 				Options: options.Index().SetUnique(true).
 					SetPartialFilterExpression(bson.D{{Key: "identityKey", Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
+		},
+		subscriptionsColl: {
+			// The handle's subscriptions, read on every lapse and claim.
+			{Keys: bson.D{{Key: "handle", Value: 1}}},
+			// The lapse sweep: earliest expiry first among rows not yet released.
+			{Keys: bson.D{{Key: "expiresAt", Value: 1}, {Key: "_id", Value: 1}}},
 		},
 	}
 

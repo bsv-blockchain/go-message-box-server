@@ -23,6 +23,7 @@ type fakeStore struct {
 	deviceID int64 // last device ID handed out
 	fees     map[string]int
 	handles  map[string]*storage.HandleRecord
+	subs     map[string]*storage.Subscription
 
 	// beforeSetIfAbsent, when set, runs at the start of SetPermissionIfAbsent so
 	// a test can land a write in the window the fee fallback races against.
@@ -51,6 +52,7 @@ func newFakeStore() *fakeStore {
 		messages: map[string]*fakeMessage{},
 		perms:    map[permKey]*storage.Permission{},
 		devices:  map[string]*storage.Device{},
+		subs:     map[string]*storage.Subscription{},
 		fees:     map[string]int{},
 		handles:  map[string]*storage.HandleRecord{},
 	}
