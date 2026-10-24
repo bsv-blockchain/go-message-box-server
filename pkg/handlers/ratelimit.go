@@ -80,7 +80,7 @@ func (l *RateLimiter) clientIP(r *http.Request) string {
 		// is hops from the right — taking the leftmost would let every request
 		// nominate its own bucket, and let one client exhaust another's.
 		//
-		// The value becomes a map key, so it is only honoured when it parses as an
+		// The value becomes a map key, so it is only honored when it parses as an
 		// address: that caps the key at 45 bytes and folds the textual forms of one
 		// IPv6 address into one bucket. Anything else, including a header with
 		// fewer entries than there are hops, falls through to the connection

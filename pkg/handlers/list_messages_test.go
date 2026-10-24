@@ -66,7 +66,7 @@ func TestSetListMessagesConfig(t *testing.T) {
 // `{}` would in TS) rather than a bespoke ERR_INVALID_JSON with no TS
 // counterpart.
 func TestDecodeListMessagesRequest_EmptyBody(t *testing.T) {
-	req := httptest.NewRequest("POST", "/listMessages", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/listMessages", nil)
 	got, rf := decodeListMessagesRequest(req)
 	if rf != nil {
 		t.Fatalf("rf = %+v, want nil for an empty body", rf)
@@ -80,7 +80,7 @@ func TestDecodeListMessagesRequest_EmptyBody(t *testing.T) {
 // non-empty body is still ERR_INVALID_JSON: only an empty body gets the "{}"
 // treatment.
 func TestDecodeListMessagesRequest_MalformedBody(t *testing.T) {
-	req := httptest.NewRequest("POST", "/listMessages", strings.NewReader(`{not json`))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/listMessages", strings.NewReader(`{not json`))
 	_, rf := decodeListMessagesRequest(req)
 	if rf == nil || rf.code != "ERR_INVALID_JSON" {
 		t.Fatalf("rf = %+v, want ERR_INVALID_JSON", rf)
@@ -522,8 +522,8 @@ func TestReadMessagePage_UsesPagerWhenStoreImplementsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
+	t.Cleanup(func() { _ = store.Close() })
+	if err = store.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := any(store).(storage.MessagePager); !ok {
@@ -565,6 +565,7 @@ func TestReadMessagePage_StorageErrorPropagates(t *testing.T) {
 // readMessagePage's error path through the fallback (non-pager) route.
 type erroringListStore struct {
 	*fakeStore
+
 	err error
 }
 

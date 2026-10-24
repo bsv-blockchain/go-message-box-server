@@ -7,34 +7,6 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
-func TestLastN(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		n        int
-		expected string
-	}{
-		{"empty string", "", 5, ""},
-		{"n is zero", "hello", 0, ""},
-		{"n negative", "hello", -1, ""},
-		{"n greater than length", "hello", 10, "hello"},
-		{"n equal to length", "hello", 5, "hello"},
-		{"n less than length", "hello", 3, "llo"},
-		{"single char", "a", 1, "a"},
-		{"unicode string", "héllo", 3, "llo"},
-		{"unicode truncate", "世界你好", 2, "你好"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := lastN(tt.input, tt.n)
-			if result != tt.expected {
-				t.Errorf("lastN(%q, %d) = %q, expected %q", tt.input, tt.n, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestIsInvalidTokenError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -70,13 +42,15 @@ func TestBuildMessage(t *testing.T) {
 		Title:      "Test Title",
 		MessageID:  "msg-456",
 		Originator: "sender-key-789",
+		Recipient:  "02recipient-key",
+		MessageBox: "payment_inbox",
 	}
 
 	msg := buildMessage(token, payload)
 
 	t.Run("token is set", func(t *testing.T) {
-		if msg.Token != token {
-			t.Errorf("Token = %q, expected %q", msg.Token, token)
+		if msg.Token != token { //nolint:staticcheck // SA1019: buildMessage must set Token, see buildMessage
+			t.Errorf("Token = %q, expected %q", msg.Token, token) //nolint:staticcheck // SA1019: as above
 		}
 	})
 
@@ -107,6 +81,12 @@ func TestBuildMessage(t *testing.T) {
 		}
 		if msg.Android.Data["originator"] != payload.Originator {
 			t.Errorf("Android.Data[originator] = %q, expected %q", msg.Android.Data["originator"], payload.Originator)
+		}
+		if msg.Android.Data["recipient"] != payload.Recipient {
+			t.Errorf("Android.Data[recipient] = %q, expected %q", msg.Android.Data["recipient"], payload.Recipient)
+		}
+		if msg.Android.Data["messageBox"] != payload.MessageBox {
+			t.Errorf("Android.Data[messageBox] = %q, expected %q", msg.Android.Data["messageBox"], payload.MessageBox)
 		}
 	})
 
@@ -153,13 +133,53 @@ func TestBuildMessage(t *testing.T) {
 		if msg.APNS.Payload.CustomData["originator"] != payload.Originator {
 			t.Errorf("CustomData[originator] = %v, expected %q", msg.APNS.Payload.CustomData["originator"], payload.Originator)
 		}
+		if msg.APNS.Payload.CustomData["recipient"] != payload.Recipient {
+			t.Errorf("CustomData[recipient] = %v, expected %q", msg.APNS.Payload.CustomData["recipient"], payload.Recipient)
+		}
+		if msg.APNS.Payload.CustomData["messageBox"] != payload.MessageBox {
+			t.Errorf("CustomData[messageBox] = %v, expected %q", msg.APNS.Payload.CustomData["messageBox"], payload.MessageBox)
+		}
 	})
+}
+
+// One FCM token serves every identity on an install, so the push has to say
+// which identity it is for. The app reads these two fields to switch to the
+// right profile; without them it can only guess.
+func TestBuildMessage_CarriesRoutingFields(t *testing.T) {
+	const recipient = "028d37b941208cd6b8a4c28288eda5f2f16c2b3ab0fcb6d13c18b47fe37b971fc1"
+	msg := buildMessage("token", FCMPayload{
+		Title:      "Payment received",
+		MessageID:  "msg-1",
+		Recipient:  recipient,
+		MessageBox: "mandala-payments",
+	})
+
+	// The same keys on both platforms: the app reads them from one code path.
+	want := map[string]string{"recipient": recipient, "messageBox": "mandala-payments", "messageId": "msg-1"}
+	for key, value := range want {
+		if got := msg.Android.Data[key]; got != value {
+			t.Errorf("Android.Data[%s] = %q, want %q", key, got, value)
+		}
+		if got := msg.APNS.Payload.CustomData[key]; got != value {
+			t.Errorf("APNS CustomData[%s] = %v, want %q", key, got, value)
+		}
+	}
+
+	// The visible text is untouched: the identity key must not reach the lock
+	// screen, and the title and body stay what they were.
+	if msg.Notification.Title != "Payment received" || msg.Notification.Body != notificationBody {
+		t.Errorf("Notification = (%q, %q), want (%q, %q)", msg.Notification.Title, msg.Notification.Body, "Payment received", notificationBody)
+	}
+	alert := msg.APNS.Payload.Aps.Alert
+	if alert.Title != "Payment received" || alert.Body != notificationBody {
+		t.Errorf("APNS alert = (%q, %q), want (%q, %q)", alert.Title, alert.Body, "Payment received", notificationBody)
+	}
 }
 
 func TestBuildMessage_EmptyPayload(t *testing.T) {
 	msg := buildMessage("token", FCMPayload{})
 
-	if msg.Token != "token" {
+	if msg.Token != "token" { //nolint:staticcheck // SA1019: buildMessage must set Token, see buildMessage
 		t.Errorf("Token should be set even with empty payload")
 	}
 	if msg.Notification == nil {

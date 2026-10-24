@@ -23,7 +23,7 @@ func newSQLite(t *testing.T) storage.Store {
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -44,7 +44,7 @@ func TestConformance_SQLiteFile(t *testing.T) {
 		if err := s.EnsureSchema(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() { _ = s.Close() })
 		return s
 	})
 }
@@ -79,7 +79,7 @@ func testPageMessagesTieBreakIsByteWise(t *testing.T, s *Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
+	ids := make([]string, 0, len(got))
 	for _, m := range got {
 		ids = append(ids, m.MessageID)
 	}

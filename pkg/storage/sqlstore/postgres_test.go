@@ -17,7 +17,7 @@ func newPostgres(t *testing.T, dsn string) storage.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx := context.Background()
 	for _, table := range []string{"messages", "messageBox", "message_permissions", "server_fees", "device_registrations"} {

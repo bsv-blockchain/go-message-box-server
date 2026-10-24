@@ -23,7 +23,7 @@ const profileType = "SbatVXXssDW3AO0J9bxIljkHGbPBGCVAXg94gXFf0cE="
 const ZeroOutpoint = "0000000000000000000000000000000000000000000000000000000000000000.0"
 
 // Build returns an unsigned self-certificate the caller may tamper with before Sign.
-func Build(t *testing.T, key *ec.PrivateKey, fields map[string]string) *certificates.Certificate {
+func Build(t testing.TB, key *ec.PrivateKey, fields map[string]string) *certificates.Certificate {
 	t.Helper()
 	serial := make([]byte, 32)
 	if _, err := rand.Read(serial); err != nil {
@@ -46,13 +46,13 @@ func Build(t *testing.T, key *ec.PrivateKey, fields map[string]string) *certific
 }
 
 // Sign signs c with key and returns its JSON.
-func Sign(t *testing.T, key *ec.PrivateKey, c *certificates.Certificate) []byte {
+func Sign(t testing.TB, key *ec.PrivateKey, c *certificates.Certificate) []byte {
 	t.Helper()
 	w, err := wallet.NewCompletedProtoWallet(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Sign(context.Background(), w); err != nil {
+	if err = c.Sign(context.Background(), w); err != nil {
 		t.Fatal(err)
 	}
 	b, err := json.Marshal(c)
@@ -63,13 +63,13 @@ func Sign(t *testing.T, key *ec.PrivateKey, c *certificates.Certificate) []byte 
 }
 
 // New returns signed certificate JSON with the given fields.
-func New(t *testing.T, key *ec.PrivateKey, fields map[string]string) []byte {
+func New(t testing.TB, key *ec.PrivateKey, fields map[string]string) []byte {
 	t.Helper()
 	return Sign(t, key, Build(t, key, fields))
 }
 
 // Profile returns a valid signed profile for handle@domain.
-func Profile(t *testing.T, key *ec.PrivateKey, handle, domain string, issuedAt time.Time, extra map[string]string) []byte {
+func Profile(t testing.TB, key *ec.PrivateKey, handle, domain string, issuedAt time.Time, extra map[string]string) []byte {
 	t.Helper()
 	fields := map[string]string{
 		"paymail":  handle + "@" + domain,

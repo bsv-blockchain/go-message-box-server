@@ -41,12 +41,13 @@ func (f *fakeDeviceStore) DeactivateDevice(_ context.Context, fcmToken string) e
 	return nil
 }
 
+func (f *fakeDeviceStore) UnregisterDevice(context.Context, string, string) error { return nil }
+
 var _ storage.DeviceStore = (*fakeDeviceStore)(nil)
 
 // withClient installs a non-nil messaging client so IsEnabled() reports true.
-// It is a zero value, so it must not be used to actually send: only the paths
-// that return before the send loop are covered here. Testing the send loop
-// itself needs an injectable sender, which the firebase package does not have.
+// It is a zero value, so it must not be used to actually send: a test that
+// reaches the send loop replaces sendFCM (see withSender).
 func withClient(t *testing.T) {
 	t.Helper()
 	original := client
@@ -92,6 +93,7 @@ func TestSendFCMNotification_ListError(t *testing.T) {
 // a lock held on device_registrations or an unresponsive Mongo primary.
 type blockingDeviceStore struct {
 	fakeDeviceStore
+
 	listWaited chan time.Duration
 }
 

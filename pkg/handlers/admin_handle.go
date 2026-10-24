@@ -50,8 +50,10 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 	caller = strings.ToLower(caller)
 	if s.lookup == nil || s.handles == nil || !slices.Contains(s.lookup.AdminKeys, caller) {
 		// A key reaching for a handle it may not have is the audit trail's most
-		// interesting event; the body is not decoded yet, so log the caller alone.
-		slog.Warn("handle release refused", "caller", caller)
+		// interesting event. The line says it happened and nothing more: the log
+		// is shipped to a third-party store, and the caller is an arbitrary
+		// identity key.
+		slog.Warn("handle release refused")
 		writeError(w, http.StatusForbidden, "ERR_NOT_ADMIN", "This identity key may not release handles.")
 		return
 	}
@@ -62,11 +64,6 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 	}
 	handle := strings.ToLower(strings.TrimSpace(req.Handle))
 
-	prev, err := s.handles.GetHandle(r.Context(), handle)
-	if err != nil {
-		s.writeStoreError(w, err)
-		return
-	}
 	now := s.clock()
 	rel := storage.HandleRelease{Handle: handle, ReleasedBy: caller, Now: now}
 	if req.SkipCooldown != nil && !*req.SkipCooldown {
@@ -78,11 +75,9 @@ func (s *Server) adminReleaseHandle(w http.ResponseWriter, r *http.Request, call
 		return
 	}
 
-	previousKey := ""
-	if prev != nil && prev.IdentityKey != nil {
-		previousKey = *prev.IdentityKey
-	}
-	// Always logged, not only in development: this is the audit trail.
-	slog.Warn("admin released handle", "handle", handle, "admin", caller, "previousIdentityKey", previousKey, "cooldown", rel.CooldownUntil != nil)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "success", "handle": handle})
+	// Always logged, not only in development: this is the audit trail. It names
+	// no identity key, as the log is shipped to a third-party store; the row
+	// keeps them: releasedBy is the admin and lastIdentityKey the removed key.
+	slog.Warn("admin released handle", "handle", handle, "cooldown", rel.CooldownUntil != nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": statusSuccess, "handle": handle})
 }

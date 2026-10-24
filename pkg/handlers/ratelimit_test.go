@@ -17,7 +17,7 @@ func TestRateLimiter(t *testing.T) {
 	// serve runs one request against h and hands back the whole recorder, so
 	// callers can assert on the 429 body as well as the status.
 	serve := func(h http.Handler, remote, xff string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 		r.RemoteAddr = remote
 		if xff != "" {
 			r.Header.Set("X-Forwarded-For", xff)
@@ -113,7 +113,7 @@ func TestRateLimiter(t *testing.T) {
 	oh := off.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	for i := 0; i < 100; i++ {
 		w := httptest.NewRecorder()
-		oh.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		oh.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/", nil))
 		if w.Code != 204 {
 			t.Fatal("disabled limiter must pass everything")
 		}
@@ -131,7 +131,7 @@ func TestRateLimiter_ClientIPHeader(t *testing.T) {
 	// and zero or more values for the header named by headerName (zero means
 	// the header is absent; more than one exercises the duplicated-header case).
 	serve := func(h http.Handler, remote, xff, headerName string, headerValues ...string) int {
-		r := httptest.NewRequest("GET", "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 		r.RemoteAddr = remote
 		if xff != "" {
 			r.Header.Set("X-Forwarded-For", xff)

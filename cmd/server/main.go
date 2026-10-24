@@ -1,3 +1,5 @@
+// Package main runs the MessageBox server: it loads the configuration, opens the
+// storage backend and wallet, and serves the BRC-31 authenticated HTTP API.
 package main
 
 import (
@@ -13,14 +15,6 @@ import (
 	"time"
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
-	_ "github.com/bsv-blockchain/go-message-box-server/docs"
-	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
-	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
-	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
-	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/defs"
@@ -29,6 +23,15 @@ import (
 	toolboxwallet "github.com/bsv-blockchain/go-wallet-toolbox/pkg/wallet"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/wdk"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	_ "github.com/bsv-blockchain/go-message-box-server/docs"
+	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
+	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
+	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
 )
 
 // @title           MessageBox Server API
@@ -57,7 +60,7 @@ func isLocalHost(host string) bool {
 func openStore(ctx context.Context, cfg *config.Config) (mbstorage.Store, error) {
 	switch cfg.StorageBackend {
 	case "sql", "":
-		return sqlstore.New(cfg.DBDriver, cfg.DBSource)
+		return sqlstore.NewContext(ctx, cfg.DBDriver, cfg.DBSource)
 	case "mongo":
 		return mongostore.New(ctx, cfg.MongoURI, cfg.MongoDatabase)
 	default:
@@ -80,7 +83,7 @@ func main() {
 	// from the config alone, so refuse before anything is opened: a
 	// misconfigured process in a crash loop should leave no database file, no
 	// wallet storage and no goroutine behind.
-	if err := checkLookupBackend(cfg); err != nil {
+	if err = checkLookupBackend(cfg); err != nil {
 		slog.Error("cannot serve the paymail profile lookup", "error", err)
 		os.Exit(1)
 	}
@@ -94,9 +97,13 @@ func main() {
 		slog.Error("failed to open storage backend", "backend", cfg.StorageBackend, "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil {
+			slog.Warn("failed to close storage backend", "error", closeErr)
+		}
+	}()
 
-	if err := store.EnsureSchema(setupCtx); err != nil {
+	if err = store.EnsureSchema(setupCtx); err != nil {
 		slog.Error("failed to prepare storage schema", "error", err)
 		os.Exit(1)
 	}
@@ -111,8 +118,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// initalize firebase
-	if err := firebase.Initialize(firebase.Config{
+	// initialize firebase
+	if err = firebase.Initialize(firebase.Config{
 		ProjectID:          cfg.FirebaseProjectID,
 		ServiceAccountJSON: cfg.FirebaseServiceAccountJSON,
 		ServiceAccountPath: cfg.FirebaseServiceAccountPath,
@@ -148,6 +155,7 @@ func main() {
 	mux.HandleFunc("POST "+prefix+"/listMessages", srv.ListMessages)
 	mux.HandleFunc("POST "+prefix+"/acknowledgeMessage", srv.AcknowledgeMessage)
 	mux.HandleFunc("POST "+prefix+"/registerDevice", srv.RegisterDevice)
+	mux.HandleFunc("POST "+prefix+"/unregisterDevice", srv.UnregisterDevice)
 	mux.HandleFunc("GET "+prefix+"/devices", srv.ListDevices)
 	mux.HandleFunc("POST "+prefix+"/permissions/set", srv.SetPermission)
 	mux.HandleFunc("GET "+prefix+"/permissions/get", srv.GetPermission)
@@ -179,7 +187,7 @@ func main() {
 	authMiddleware := middleware.NewAuth(w)
 
 	// Payment middleware (returns 0 for now, matching the original)
-	paymentMiddleware := middleware.NewPayment(w, middleware.WithRequestPriceCalculator(func(r *http.Request) (int, error) {
+	paymentMiddleware := middleware.NewPayment(w, middleware.WithRequestPriceCalculator(func(_ *http.Request) (int, error) {
 		return 0, nil
 	}))
 
@@ -349,7 +357,7 @@ func createWalletWithLocalStorage(cfg *config.Config, network defs.BSVNetwork) (
 	logger.Log("Wallet initialized successfully with local storage")
 
 	return w, func() {
-		activeStorage.Stop()
+		activeStorage.Stop(context.Background())
 	}, nil
 }
 

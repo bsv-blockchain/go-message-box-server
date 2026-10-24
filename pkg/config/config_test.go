@@ -18,7 +18,7 @@ func TestLoad_Lookup(t *testing.T) {
 	}
 
 	t.Setenv("PAYMAIL_DOMAIN", "Example.COM")
-	if _, err := Load(); err == nil {
+	if _, err = Load(); err == nil {
 		t.Error("PAYMAIL_DOMAIN without PAYMAIL_HOST must fail")
 	}
 

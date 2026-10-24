@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	sdk "github.com/bsv-blockchain/go-sdk/wallet"
+
 	"github.com/bsv-blockchain/go-message-box-server/internal/firebase"
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
-	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // SendMessage godoc
@@ -36,7 +37,11 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "ERR_AUTH_REQUIRED", "Authentication required")
 		return
 	}
+	s.sendMessage(w, r, senderKey)
+}
 
+// sendMessage is SendMessage for an already-authenticated sender.
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey string) {
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "ERR_INVALID_JSON", "Invalid JSON body")
@@ -134,9 +139,9 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 	var feeRows []feeRow
 	for _, recip := range recipients {
 		recip = strings.TrimSpace(recip)
-		rf, err := s.recipientFee(r.Context(), recip, senderKey, boxType)
-		if err != nil {
-			logger.Error("failed to get recipient fee", "error", err)
+		rf, feeErr := s.recipientFee(r.Context(), recip, senderKey, boxType)
+		if feeErr != nil {
+			logger.Error("failed to get recipient fee", "error", feeErr)
 			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
 			return
 		}
@@ -185,9 +190,9 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		if deliveryFee > 0 {
 			serverOutput := req.Payment.Outputs[0] // server delivery fee is the output at index 0
 
-			sdkOutput, err := toSDKInternalizeOutput(serverOutput)
-			if err != nil {
-				writeError(w, 400, "ERR_INVALID_PAYMENT_OUTPUT", fmt.Sprintf("Invalid payment output: %v", err))
+			sdkOutput, outputErr := toSDKInternalizeOutput(serverOutput)
+			if outputErr != nil {
+				writeError(w, 400, "ERR_INVALID_PAYMENT_OUTPUT", fmt.Sprintf("Invalid payment output: %v", outputErr))
 				return
 			}
 
@@ -203,10 +208,10 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 				Labels:      req.Payment.Labels,
 			}
 
-			result, err := s.wallet.InternalizeAction(r.Context(), internalizeArgs, "messagebox-server")
-			if err != nil {
-				logger.Error("failed to internalize delivery fee", "error", err)
-				writeError(w, 500, "ERR_INTERNALIZE_FAILED", fmt.Sprintf("Failed to internalize payment: %v", err))
+			result, internalizeErr := s.wallet.InternalizeAction(r.Context(), internalizeArgs, "messagebox-server")
+			if internalizeErr != nil {
+				logger.Error("failed to internalize delivery fee", "error", internalizeErr)
+				writeError(w, 500, "ERR_INTERNALIZE_FAILED", fmt.Sprintf("Failed to internalize payment: %v", internalizeErr))
 				return
 			}
 			if !result.Accepted {
@@ -218,7 +223,8 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 		perRecipientOutputs, err = buildPerRecipientOutputs(req.Payment.Outputs, deliveryFee, feeRows)
 		if err != nil {
-			if omErr, ok := err.(*OutputMappingError); ok {
+			var omErr *OutputMappingError
+			if errors.As(err, &omErr) {
 				logger.Error("output mapping failed", "code", omErr.Code, "description", omErr.Description)
 				writeError(w, 400, omErr.Code, omErr.Description)
 			} else {
@@ -243,7 +249,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 		// Build stored body
 		storedBody := map[string]any{
-			"message": json.RawMessage(msg.Body),
+			"message": msg.Body,
 		}
 
 		// Include per-recipient payment (only their outputs, not full payment)
@@ -258,7 +264,15 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			storedBody["payment"] = perRecipientPayment
 		}
 
-		bodyBytes, _ := json.Marshal(storedBody)
+		bodyBytes, marshalErr := json.Marshal(storedBody)
+		if marshalErr != nil {
+			// Not expected: Body is a json.RawMessage the request decoder already
+			// validated, and the rest are plain values. Storing the message with an
+			// empty body, as ignoring the error used to, would lose it silently.
+			logger.Error("failed to encode stored message body", "error", marshalErr)
+			writeError(w, 500, "ERR_INTERNAL", "An internal error has occurred.")
+			return
+		}
 
 		newMsg := storage.NewMessage{
 			MessageID:  msgID,
@@ -269,7 +283,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.Store.InsertMessage(writeCtx, newMsg); err != nil {
 			if errors.Is(err, storage.ErrDuplicateMessage) {
-				logger.Error("duplicate message rejected", "messageId", msgID)
+				logger.Error("duplicate message rejected", "messageBox", boxType)
 				writeError(w, 400, "ERR_DUPLICATE_MESSAGE", "Duplicate message.")
 				return
 			}
@@ -283,12 +297,14 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 			// SendFCMNotification bounds every call it makes, so this carries no
 			// overall deadline: a shared budget would starve the tail of a long
 			// device list.
-			go func(recipient, messageID, title string) {
+			go func(recipient, messageID, title, box string) {
 				firebase.SendFCMNotification(writeCtx, s.Store, recipient, firebase.FCMPayload{
-					Title:     title,
-					MessageID: messageID,
+					Title:      title,
+					MessageID:  messageID,
+					Recipient:  recipient,
+					MessageBox: box,
 				})
-			}(fr.recipient, msgID, title)
+			}(fr.recipient, msgID, title, boxType)
 		}
 
 		results = append(results, SendMessageResult{Recipient: fr.recipient, MessageID: msgID})
@@ -298,7 +314,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		results = []SendMessageResult{}
 	}
 	writeJSON(w, 200, SendMessageResponse{
-		Status:  "success",
+		Status:  statusSuccess,
 		Message: fmt.Sprintf("Your message has been sent to %d recipient(s).", len(results)),
 		Results: results,
 	})

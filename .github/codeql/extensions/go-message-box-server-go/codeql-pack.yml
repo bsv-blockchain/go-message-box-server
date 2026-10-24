@@ -1,0 +1,10 @@
+# CodeQL model pack for this repository's Go code. Code scanning picks up any
+# pack under .github/codeql/extensions automatically, in default and advanced
+# setup alike, so codeql-analysis.yml does not reference it.
+name: bsv-blockchain/go-message-box-server-go
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/go-all: '*'
+dataExtensions:
+  - models/*.model.yml

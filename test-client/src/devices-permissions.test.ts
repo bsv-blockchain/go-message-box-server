@@ -21,8 +21,12 @@ const senderIdentityKey = senderKey.toPublicKey().toString()
 
 const fetcher = new AuthFetch(new ProtoWallet(recipientKey) as any)
 
-async function call(method: string, path: string, body?: unknown) {
-  const res = await fetcher.fetch(`${SERVER_HOST}${path}`, {
+// A second profile on the same install: it has its own identity and registers
+// the same FCM token the first one does.
+const otherProfileFetcher = new AuthFetch(new ProtoWallet(PrivateKey.fromRandom()) as any)
+
+async function call(method: string, path: string, body?: unknown, as: AuthFetch = fetcher) {
+  const res = await as.fetch(`${SERVER_HOST}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {})
@@ -89,6 +93,59 @@ describe('Go MessageBox Server — Devices', () => {
 
     expect(status).toBe(400)
     expect(json.code).toBe('ERR_INVALID_PLATFORM')
+  })
+
+  // A wallet with several profiles has one FCM token and registers it once per
+  // profile. The second registration must not take it from the first.
+  test('should let a second identity register the same token', async () => {
+    const { status, json } = await call('POST', '/registerDevice', {
+      fcmToken: 'tok-integration-1',
+      platform: 'ios'
+    }, otherProfileFetcher)
+
+    expect(status).toBe(200)
+    expect(Number.isSafeInteger(json.deviceId) && json.deviceId >= 1).toBe(true)
+    expect(json.deviceId).not.toBe(registrationId)
+
+    const mine = await call('GET', '/devices')
+    expect(mine.json.devices).toHaveLength(1)
+    expect(mine.json.devices[0]).toMatchObject({ id: registrationId, active: true })
+
+    const theirs = await call('GET', '/devices', undefined, otherProfileFetcher)
+    expect(theirs.json.devices).toHaveLength(1)
+    expect(theirs.json.devices[0]).toMatchObject({ id: json.deviceId, active: true })
+  })
+
+  test('should unregister only the callers registration of a token', async () => {
+    const { status, json } = await call('POST', '/unregisterDevice', {
+      fcmToken: 'tok-integration-1'
+    })
+
+    expect(status).toBe(200)
+    expect(json.status).toBe('success')
+
+    const mine = await call('GET', '/devices')
+    expect(mine.json.devices).toHaveLength(0)
+
+    const theirs = await call('GET', '/devices', undefined, otherProfileFetcher)
+    expect(theirs.json.devices).toHaveLength(1)
+    expect(theirs.json.devices[0].active).toBe(true)
+  })
+
+  test('should succeed when unregistering a token that is not registered', async () => {
+    const again = await call('POST', '/unregisterDevice', { fcmToken: 'tok-integration-1' })
+    expect(again.status).toBe(200)
+    expect(again.json.status).toBe('success')
+
+    const never = await call('POST', '/unregisterDevice', { fcmToken: 'tok-never-registered' })
+    expect(never.status).toBe(200)
+  })
+
+  test('should reject unregistering without a token', async () => {
+    const { status, json } = await call('POST', '/unregisterDevice', { fcmToken: '' })
+
+    expect(status).toBe(400)
+    expect(json.code).toBe('ERR_INVALID_FCM_TOKEN')
   })
 })
 

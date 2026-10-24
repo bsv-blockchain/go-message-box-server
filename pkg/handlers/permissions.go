@@ -65,14 +65,14 @@ func (s *Server) SetPermission(w http.ResponseWriter, r *http.Request) {
 		actionText = "Messages from"
 	}
 
-	switch {
-	case fee == storage.FeeBlocked:
+	switch fee {
+	case storage.FeeBlocked:
 		if isBoxWide {
 			description = fmt.Sprintf("%s %s to %s is now blocked.", actionText, senderText, req.MessageBox)
 		} else {
 			description = fmt.Sprintf("%s %s to %s are now blocked.", actionText, senderText, req.MessageBox)
 		}
-	case fee == 0:
+	case 0:
 		if isBoxWide {
 			description = fmt.Sprintf("%s %s to %s is now always allowed.", actionText, senderText, req.MessageBox)
 		} else {
@@ -87,7 +87,7 @@ func (s *Server) SetPermission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, SetPermissionResponse{
-		Status:      "success",
+		Status:      statusSuccess,
 		Description: description,
 	})
 }
@@ -148,7 +148,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 		senderVal := perm.Sender
 
 		writeJSON(w, 200, GetPermissionResponse{
-			Status:      "success",
+			Status:      statusSuccess,
 			Description: desc,
 			Permission: &PermissionDetail{
 				Sender:       senderVal,
@@ -167,7 +167,7 @@ func (s *Server) GetPermission(w http.ResponseWriter, r *http.Request) {
 			desc = fmt.Sprintf("No box-wide permission setting found for %s.", messageBox)
 		}
 		writeJSON(w, 200, GetPermissionResponse{
-			Status:      "success",
+			Status:      statusSuccess,
 			Description: desc,
 		})
 	}
@@ -254,7 +254,7 @@ func (s *Server) ListPermissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, ListPermissionsResponse{
-		Status:      "success",
+		Status:      statusSuccess,
 		Permissions: out,
 		TotalCount:  page.Total,
 	})
@@ -327,7 +327,7 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, QuoteSingleResponse{
-			Status:      "success",
+			Status:      statusSuccess,
 			Description: "Message delivery quote generated.",
 			Quote: QuoteSingle{
 				DeliveryFee:  deliveryFee,
@@ -376,7 +376,7 @@ func (s *Server) GetQuote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, QuoteMultiResponse{
-		Status:            "success",
+		Status:            statusSuccess,
 		Description:       fmt.Sprintf("Message delivery quotes generated for %d recipients.", len(recipients)),
 		QuotesByRecipient: quotes,
 		Totals: QuoteTotals{

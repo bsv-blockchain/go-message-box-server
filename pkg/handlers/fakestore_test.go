@@ -19,7 +19,7 @@ type fakeStore struct {
 	clock    time.Time
 	messages map[string]*fakeMessage
 	perms    map[permKey]*storage.Permission
-	devices  map[string]*storage.Device
+	devices  map[deviceKey]*storage.Device
 	deviceID int64 // last device ID handed out
 	fees     map[string]int
 	handles  map[string]*storage.HandleRecord
@@ -32,8 +32,16 @@ type fakeStore struct {
 
 type fakeMessage struct {
 	storage.NewMessage
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// deviceKey is a registration's identity: one identity's hold on one token. The
+// same token can be held by several identities.
+type deviceKey struct {
+	identityKey string
+	fcmToken    string
 }
 
 type permKey struct {
@@ -51,7 +59,7 @@ func newFakeStore() *fakeStore {
 		clock:    time.Now().UTC(),
 		messages: map[string]*fakeMessage{},
 		perms:    map[permKey]*storage.Permission{},
-		devices:  map[string]*storage.Device{},
+		devices:  map[deviceKey]*storage.Device{},
 		subs:     map[string]*storage.Subscription{},
 		fees:     map[string]int{},
 		handles:  map[string]*storage.HandleRecord{},
@@ -204,7 +212,7 @@ func (f *fakeStore) GetPermission(_ context.Context, recipient string, sender *s
 
 	p, ok := f.perms[makePermKey(recipient, sender, messageBox)]
 	if !ok {
-		return nil, nil
+		return nil, nil //nolint:nilnil // PermissionStore contract: no permission is (nil, nil)
 	}
 	clone := *p
 	return &clone, nil
@@ -260,13 +268,13 @@ func (f *fakeStore) RegisterDevice(_ context.Context, d storage.NewDevice) (int6
 	defer f.mu.Unlock()
 
 	ts := f.tick()
-	existing, ok := f.devices[d.FCMToken]
+	key := deviceKey{d.IdentityKey, d.FCMToken}
+	existing, ok := f.devices[key]
 	if !ok {
 		f.deviceID++
-		existing = &storage.Device{ID: f.deviceID, FCMToken: d.FCMToken, CreatedAt: ts}
-		f.devices[d.FCMToken] = existing
+		existing = &storage.Device{ID: f.deviceID, IdentityKey: d.IdentityKey, FCMToken: d.FCMToken, CreatedAt: ts}
+		f.devices[key] = existing
 	}
-	existing.IdentityKey = d.IdentityKey
 	existing.DeviceID = d.DeviceID
 	existing.Platform = d.Platform
 	existing.Active = true
@@ -302,10 +310,12 @@ func (f *fakeStore) UpdateDeviceLastUsed(_ context.Context, fcmToken string) err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if d, ok := f.devices[fcmToken]; ok {
-		ts := f.tick()
-		d.LastUsed = &ts
-		d.UpdatedAt = ts
+	for _, d := range f.devices {
+		if d.FCMToken == fcmToken {
+			ts := f.tick()
+			d.LastUsed = &ts
+			d.UpdatedAt = ts
+		}
 	}
 	return nil
 }
@@ -314,10 +324,20 @@ func (f *fakeStore) DeactivateDevice(_ context.Context, fcmToken string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if d, ok := f.devices[fcmToken]; ok {
-		d.Active = false
-		d.UpdatedAt = f.tick()
+	for _, d := range f.devices {
+		if d.FCMToken == fcmToken {
+			d.Active = false
+			d.UpdatedAt = f.tick()
+		}
 	}
+	return nil
+}
+
+func (f *fakeStore) UnregisterDevice(_ context.Context, identityKey, fcmToken string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.devices, deviceKey{identityKey, fcmToken})
 	return nil
 }
 
@@ -334,5 +354,5 @@ func TestConformance_Fake(t *testing.T) {
 }
 
 func TestConformance_FakeHandles(t *testing.T) {
-	storagetest.RunHandleStoreTests(t, func(t *testing.T) storage.HandleStore { return newFakeStore() })
+	storagetest.RunHandleStoreTests(t, func(_ *testing.T) storage.HandleStore { return newFakeStore() })
 }

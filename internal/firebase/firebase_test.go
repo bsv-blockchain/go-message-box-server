@@ -16,7 +16,6 @@ func TestInitialize_EmptyProjectID(t *testing.T) {
 	}
 
 	err := Initialize(cfg)
-
 	if err != nil {
 		t.Errorf("Initialize with empty ProjectID should return nil, got %v", err)
 	}
@@ -95,17 +94,20 @@ func TestClient_ReturnsNilWhenNotInitialized(t *testing.T) {
 	}
 }
 
+// fakeServiceAccountJSON is a credential-shaped placeholder; it holds no key.
+const fakeServiceAccountJSON = `{"type": "service_account"}` //nolint:gosec // G101: placeholder, not a credential
+
 func TestConfig_Fields(t *testing.T) {
 	cfg := Config{
 		ProjectID:          "my-project",
-		ServiceAccountJSON: `{"type": "service_account"}`,
+		ServiceAccountJSON: fakeServiceAccountJSON,
 		ServiceAccountPath: "/path/to/creds.json",
 	}
 
 	if cfg.ProjectID != "my-project" {
 		t.Errorf("ProjectID = %q, expected %q", cfg.ProjectID, "my-project")
 	}
-	if cfg.ServiceAccountJSON != `{"type": "service_account"}` {
+	if cfg.ServiceAccountJSON != fakeServiceAccountJSON {
 		t.Errorf("ServiceAccountJSON not set correctly")
 	}
 	if cfg.ServiceAccountPath != "/path/to/creds.json" {
@@ -118,5 +120,5 @@ func TestConfig_Fields(t *testing.T) {
 func resetState() {
 	client = nil
 	clientOnce = sync.Once{}
-	initErr = nil
+	errInit = nil
 }

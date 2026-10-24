@@ -24,12 +24,20 @@ const smartQuotes = "\u2018\u2019\u201c\u201d"
 // Indented code blocks and comments inside function bodies are left alone, so
 // that is where a snippet containing quotes belongs.
 func TestNoSmartQuotesInGoSource(t *testing.T) {
-	root, err := filepath.Abs("../..")
+	dir, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Walk through an os.Root so no path, symlinks included, can resolve
+	// outside the repository.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	fsys := root.FS()
 
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -45,15 +53,14 @@ func TestNoSmartQuotesInGoSource(t *testing.T) {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
+		content, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
 		}
 		for i, line := range strings.Split(string(content), "\n") {
 			if strings.ContainsAny(line, smartQuotes) {
-				rel, _ := filepath.Rel(root, path)
 				t.Errorf("%s:%d contains a smart quote; use a plain apostrophe or double quote: %s",
-					rel, i+1, strings.TrimSpace(line))
+					path, i+1, strings.TrimSpace(line))
 			}
 		}
 		return nil

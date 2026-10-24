@@ -1,5 +1,8 @@
 package handlers
 
+// statusSuccess is the status field of every successful response.
+const statusSuccess = "success"
+
 // ErrorResponse represents an error response.
 // @Description Error response with status, code, and description
 type ErrorResponse struct {
@@ -86,6 +89,13 @@ type RegisterDeviceResponse struct {
 	// Registration ID, stable across re-registrations of the same token. Not
 	// the request's deviceId string: the name follows the TS reference server.
 	DeviceID int64 `json:"deviceId" example:"1"`
+}
+
+// UnregisterDeviceResponse represents the response for unregisterDevice.
+// @Description Response after unregistering a device
+type UnregisterDeviceResponse struct {
+	Status  string `json:"status" example:"success"`
+	Message string `json:"message" example:"Device unregistered from push notifications"`
 }
 
 // SetPermissionResponse represents the response for setPermission.

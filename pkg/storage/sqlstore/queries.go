@@ -93,7 +93,7 @@ func (s *Store) ListMessages(ctx context.Context, recipient, messageBox string) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var msgs []storage.Message
 	for rows.Next() {
@@ -134,7 +134,7 @@ func (s *Store) PageMessages(ctx context.Context, q storage.MessagePageQuery) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var msgs []storage.Message
 	for rows.Next() {
@@ -204,7 +204,7 @@ const permissionColumns = `id, recipient, sender, message_box, recipient_fee, cr
 
 // scanPermission reads one permission row. The id column is scanned and
 // discarded: it is a SQL surrogate key that the contract does not expose.
-func scanPermission(sc interface{ Scan(...any) error }) (storage.Permission, error) {
+func scanPermission(sc interface{ Scan(dest ...any) error }) (storage.Permission, error) {
 	var (
 		p      storage.Permission
 		id     int64
@@ -221,7 +221,7 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// withBoxWideLock serialises writers of one box-wide permission.
+// withBoxWideLock serializes writers of one box-wide permission.
 //
 // UNIQUE(recipient, sender, message_box) does not constrain rows with a NULL
 // sender, since NULL != NULL, so nothing in the schema stops two callers both
@@ -251,7 +251,7 @@ func (s *Store) withBoxWideLock(ctx context.Context, recipient, messageBox strin
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() // no-op once committed
+	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, recipient, messageBox); err != nil {
 		return err
@@ -262,15 +262,20 @@ func (s *Store) withBoxWideLock(ctx context.Context, recipient, messageBox strin
 	return tx.Commit()
 }
 
-// insertBoxWideIfAbsent inserts the box-wide row unless one exists and reports
-// whether it did. The caller holds withBoxWideLock.
-func (s *Store) insertBoxWideIfAbsent(ctx context.Context, ex execer, recipient, messageBox string, recipientFee int, now time.Time) (bool, error) {
-	res, err := ex.ExecContext(ctx, s.rebind(
-		`INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
+// insertBoxWideSQL inserts the box-wide permission row unless one exists.
+const insertBoxWideSQL = `INSERT INTO message_permissions (recipient, sender, message_box, recipient_fee, created_at, updated_at)
 		 SELECT ?, NULL, ?, ?, ?, ?
 		 WHERE NOT EXISTS (
 		   SELECT 1 FROM message_permissions WHERE recipient = ? AND sender IS NULL AND message_box = ?
-		 )`),
+		 )`
+
+// updateBoxWideFeeSQL sets the fee on an existing box-wide permission row.
+const updateBoxWideFeeSQL = `UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`
+
+// insertBoxWideIfAbsent inserts the box-wide row unless one exists and reports
+// whether it did. The caller holds withBoxWideLock.
+func (s *Store) insertBoxWideIfAbsent(ctx context.Context, ex execer, recipient, messageBox string, recipientFee int, now time.Time) (bool, error) {
+	res, err := ex.ExecContext(ctx, s.rebind(insertBoxWideSQL),
 		recipient, messageBox, recipientFee, now, now,
 		recipient, messageBox,
 	)
@@ -293,8 +298,7 @@ func (s *Store) SetPermission(ctx context.Context, recipient string, sender *str
 			if err != nil || inserted {
 				return err
 			}
-			_, err = ex.ExecContext(ctx, s.rebind(
-				`UPDATE message_permissions SET recipient_fee = ?, updated_at = ? WHERE recipient = ? AND sender IS NULL AND message_box = ?`),
+			_, err = ex.ExecContext(ctx, s.rebind(updateBoxWideFeeSQL),
 				recipientFee, now, recipient, messageBox,
 			)
 			return err
@@ -348,7 +352,7 @@ func (s *Store) GetPermission(ctx context.Context, recipient string, sender *str
 
 	p, err := scanPermission(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // PermissionStore contract: no permission is (nil, nil)
 	}
 	if err != nil {
 		return nil, err
@@ -394,7 +398,7 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 	if err != nil {
 		return storage.PermissionPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		p, err := scanPermission(rows)
@@ -413,19 +417,21 @@ func (s *Store) ListPermissions(ctx context.Context, q storage.PermissionQuery) 
 
 const deviceColumns = `id, identity_key, fcm_token, device_id, platform, active, created_at, updated_at, last_used`
 
-// RegisterDevice implements storage.DeviceStore. RETURNING reports the row's
-// id on both the insert and the DO UPDATE path, so a re-registration gets the
-// id the token was first stored under.
+// RegisterDevice implements storage.DeviceStore. It upserts on the pair, so a
+// second identity registering a token the first already holds gets a row of its
+// own and leaves the first untouched. RETURNING reports the row's id on both the
+// insert and the DO UPDATE path, so a re-registration gets the id the pair was
+// first stored under.
 func (s *Store) RegisterDevice(ctx context.Context, d storage.NewDevice) (int64, error) {
 	now := nowUTC()
 	var id int64
 	err := s.queryRow(ctx,
 		`INSERT INTO device_registrations (identity_key, fcm_token, device_id, platform, created_at, updated_at, active, last_used)
 		 VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
-		 ON CONFLICT(fcm_token) DO UPDATE SET identity_key = ?, device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?
+		 ON CONFLICT(identity_key, fcm_token) DO UPDATE SET device_id = ?, platform = ?, updated_at = ?, active = TRUE, last_used = ?
 		 RETURNING id`,
 		d.IdentityKey, d.FCMToken, d.DeviceID, d.Platform, now, now, now,
-		d.IdentityKey, d.DeviceID, d.Platform, now, now,
+		d.DeviceID, d.Platform, now, now,
 	).Scan(&id)
 	return id, err
 }
@@ -442,7 +448,7 @@ func (s *Store) listDevices(ctx context.Context, identityKey string, activeOnly 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var devices []storage.Device
 	for rows.Next() {
@@ -473,7 +479,8 @@ func (s *Store) ListActiveDevices(ctx context.Context, identityKey string) ([]st
 	return s.listDevices(ctx, identityKey, true)
 }
 
-// UpdateDeviceLastUsed implements storage.DeviceStore.
+// UpdateDeviceLastUsed implements storage.DeviceStore. It is keyed by token
+// alone, so it stamps every identity's registration of it.
 func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error {
 	now := nowUTC()
 	_, err := s.exec(ctx,
@@ -483,11 +490,23 @@ func (s *Store) UpdateDeviceLastUsed(ctx context.Context, fcmToken string) error
 	return err
 }
 
-// DeactivateDevice implements storage.DeviceStore.
+// DeactivateDevice implements storage.DeviceStore. It is keyed by token alone,
+// so it deactivates every identity's registration of it: FCM reported the token
+// dead, not one identity's use of it.
 func (s *Store) DeactivateDevice(ctx context.Context, fcmToken string) error {
 	_, err := s.exec(ctx,
 		`UPDATE device_registrations SET active = FALSE, updated_at = ? WHERE fcm_token = ?`,
 		nowUTC(), fcmToken,
+	)
+	return err
+}
+
+// UnregisterDevice implements storage.DeviceStore. Both columns are in the
+// WHERE clause: the token alone would delete every identity's registration of it.
+func (s *Store) UnregisterDevice(ctx context.Context, identityKey, fcmToken string) error {
+	_, err := s.exec(ctx,
+		`DELETE FROM device_registrations WHERE identity_key = ? AND fcm_token = ?`,
+		identityKey, fcmToken,
 	)
 	return err
 }

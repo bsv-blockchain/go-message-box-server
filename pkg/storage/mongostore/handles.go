@@ -74,7 +74,7 @@ func (s *Store) getHandleWhere(ctx context.Context, filter bson.M) (*storage.Han
 	var d handleDoc
 	err := s.db.Collection(handlesColl).FindOne(ctx, filter).Decode(&d)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // HandleReader contract: no record is (nil, nil)
 	}
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func (s *Store) getHandleWhere(ctx context.Context, filter bson.M) (*storage.Han
 
 // GetHandle implements storage.HandleReader.
 func (s *Store) GetHandle(ctx context.Context, handle string) (*storage.HandleRecord, error) {
-	return s.getHandleWhere(ctx, bson.M{"_id": handle})
+	return s.getHandleWhere(ctx, bson.M{fieldID: handle})
 }
 
 // GetHandleBySkeleton implements storage.HandleReader.
@@ -96,7 +96,7 @@ func (s *Store) GetHandleBySkeleton(ctx context.Context, skeleton string) (*stor
 // GetHandleByIdentityKey implements storage.HandleReader. A released row has no
 // identityKey field, so matching the key at all is what makes this active-only.
 func (s *Store) GetHandleByIdentityKey(ctx context.Context, identityKey string) (*storage.HandleRecord, error) {
-	return s.getHandleWhere(ctx, bson.M{"identityKey": identityKey})
+	return s.getHandleWhere(ctx, bson.M{fieldIdentityKey: identityKey})
 }
 
 // claimWriteErr splits the two failures a claim write can have. A duplicate key
@@ -143,14 +143,14 @@ func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.C
 	// issuedAt is a replay, not an update.
 	res, err := coll.UpdateOne(ctx,
 		bson.M{
-			"_id":          c.Handle,
-			"identityKey":  c.IdentityKey,
-			"issuedAt":     bson.M{"$lt": c.IssuedAt},
-			"serialNumber": bson.M{"$ne": c.SerialNumber},
+			fieldID:          c.Handle,
+			fieldIdentityKey: c.IdentityKey,
+			"issuedAt":       bson.M{"$lt": c.IssuedAt},
+			"serialNumber":   bson.M{"$ne": c.SerialNumber},
 		},
 		bson.M{"$set": bson.M{
 			"skeleton": c.Skeleton, "certificate": c.Certificate, "serialNumber": c.SerialNumber,
-			"issuedAt": c.IssuedAt, "updatedAt": ts,
+			"issuedAt": c.IssuedAt, fieldUpdatedAt: ts,
 		}},
 	)
 	if err != nil {
@@ -176,16 +176,16 @@ func (s *Store) claimOnce(ctx context.Context, c storage.HandleClaim) (storage.C
 	}
 	res, err = coll.UpdateOne(ctx,
 		bson.M{
-			"_id":         c.Handle,
-			"identityKey": bson.M{"$exists": false},
-			"issuedAt":    bson.M{"$lt": c.IssuedAt},
-			"$or":         free,
+			fieldID:          c.Handle,
+			fieldIdentityKey: bson.M{"$exists": false},
+			"issuedAt":       bson.M{"$lt": c.IssuedAt},
+			"$or":            free,
 		},
 		bson.M{
 			"$set": bson.M{
-				"skeleton": c.Skeleton, "identityKey": c.IdentityKey, "lastIdentityKey": c.IdentityKey,
+				"skeleton": c.Skeleton, fieldIdentityKey: c.IdentityKey, "lastIdentityKey": c.IdentityKey,
 				"certificate": c.Certificate, "serialNumber": c.SerialNumber,
-				"issuedAt": c.IssuedAt, "updatedAt": ts,
+				"issuedAt": c.IssuedAt, fieldUpdatedAt: ts,
 			},
 			"$unset": bson.M{"releasedAt": "", "cooldownUntil": "", "releasedBy": ""},
 		},
@@ -225,9 +225,9 @@ func (s *Store) ReleaseHandle(ctx context.Context, r storage.HandleRelease) erro
 	// compares against, or a sub-millisecond tombstone would never be
 	// recognised as the one already applied.
 	r.Now = msUTC(r.Now)
-	filter := bson.M{"_id": r.Handle, "identityKey": bson.M{"$exists": true}}
-	set := bson.M{"updatedAt": now(), "releasedAt": r.Now, "releasedBy": r.ReleasedBy}
-	unset := bson.M{"identityKey": "", "certificate": ""}
+	filter := bson.M{fieldID: r.Handle, fieldIdentityKey: bson.M{"$exists": true}}
+	set := bson.M{fieldUpdatedAt: now(), "releasedAt": r.Now, "releasedBy": r.ReleasedBy}
+	unset := bson.M{fieldIdentityKey: "", "certificate": ""}
 
 	if r.Owner != nil {
 		// The tombstone is itself a certificate: it must come from the owner and
@@ -235,7 +235,7 @@ func (s *Store) ReleaseHandle(ctx context.Context, r storage.HandleRelease) erro
 		// claim is compared against.
 		issuedAt := msUTC(*r.IssuedAt)
 		r.IssuedAt = &issuedAt
-		filter["identityKey"] = *r.Owner
+		filter[fieldIdentityKey] = *r.Owner
 		filter["issuedAt"] = bson.M{"$lt": issuedAt}
 		set["issuedAt"] = issuedAt
 	}
@@ -267,7 +267,7 @@ func (s *Store) FindHandles(ctx context.Context, m storage.HandleMatch) ([]stora
 		return []storage.HandleRecord{}, nil
 	}
 
-	field := "_id"
+	field := fieldID
 	if m.Field == storage.HandleFieldSkeleton {
 		field = "skeleton"
 	}
@@ -284,8 +284,8 @@ func (s *Store) FindHandles(ctx context.Context, m storage.HandleMatch) ([]stora
 	}
 
 	cur, err := s.db.Collection(handlesColl).Find(ctx,
-		bson.M{"identityKey": bson.M{"$exists": true}, field: bson.M{"$regex": pattern}},
-		options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).SetLimit(int64(m.Limit)),
+		bson.M{fieldIdentityKey: bson.M{"$exists": true}, field: bson.M{"$regex": pattern}},
+		options.Find().SetSort(bson.D{{Key: fieldID, Value: 1}}).SetLimit(int64(m.Limit)),
 	)
 	if err != nil {
 		return nil, err
