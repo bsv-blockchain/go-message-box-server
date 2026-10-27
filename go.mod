@@ -13,7 +13,7 @@ require (
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
 	go.mongodb.org/mongo-driver/v2 v2.9.2
-	google.golang.org/api v0.304.0
+	google.golang.org/api v0.305.0
 )
 
 require (
