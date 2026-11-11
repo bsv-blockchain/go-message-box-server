@@ -3,7 +3,7 @@
     "description": "",
     "devDependencies": {
         "@bsv/message-box-client": "^2.5.4",
-        "@bsv/sdk": "^4.0.0",
+        "@bsv/sdk": "^4.0.1",
         "@types/jest": "^30.0.0",
         "@types/node": "^25.9.8",
         "jest": "^30.5.2",
