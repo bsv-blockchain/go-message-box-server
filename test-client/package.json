@@ -11,7 +11,7 @@
         "typescript": "^5.9.3"
     },
     "keywords": [],
-    "license": "ISC",
+    "license": "Apache-2.0",
     "main": "index.js",
     "name": "test-client",
     "overrides": {
