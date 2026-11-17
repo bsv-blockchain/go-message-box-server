@@ -313,6 +313,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey s
 	if results == nil {
 		results = []SendMessageResult{}
 	}
+	s.announceStored(writeCtx, senderKey, boxType, msg.Body, req.Payment != nil, results)
 	writeJSON(w, 200, SendMessageResponse{
 		Status:  statusSuccess,
 		Message: fmt.Sprintf("Your message has been sent to %d recipient(s).", len(results)),

@@ -266,7 +266,7 @@ All endpoints below require BRC-31 authentication via the `go-bsv-middleware` au
 | `FIREBASE_PROJECT_ID`           | unset                        | Firebase project for FCM push notifications; unset disables push                                  |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | unset                        | Service account credentials as JSON (takes precedence over the path)                             |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | unset                        | Path to a service account credentials file                                                        |
-| `ENABLE_WEBSOCKETS`             | `true`                       | Enable WebSocket support (not yet implemented)                                                    |
+| `ENABLE_WEBSOCKETS`             | `true`                       | Serve Socket.IO live delivery at `/socket.io/` (TS-compatible; limits via `WEBSOCKET_*`)          |
 
 `POST /listMessages` pagination reads four more, all optional and matching the TS reference server's "standard" resource profile defaults:
 

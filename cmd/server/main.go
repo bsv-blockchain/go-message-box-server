@@ -29,6 +29,7 @@ import (
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
 	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
@@ -193,6 +194,20 @@ func main() {
 
 	// create root mux for swagger to avoid auth
 	rootMux := http.NewServeMux()
+	// Readiness, as the TS server's GET /ready: 200 once the store answers a
+	// query, 503 while it does not. Outside auth, for probes and orchestrators.
+	rootMux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if _, err := store.GetServerDeliveryFee(ctx, "notifications"); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"error","code":"ERR_NOT_READY","description":"Message Box dependencies are not ready."}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
 	rootMux.Handle("GET /swagger/", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
 	))
@@ -223,8 +238,34 @@ func main() {
 	))
 
 	// Stack: CORS -> rootMux -> (public lookup | Auth -> Payment -> Routes)
-	handler := &corsHandler{
+	var handler http.Handler = &corsHandler{
 		next: rootMux,
+	}
+
+	// Live delivery. Socket.IO authenticates each connection itself with
+	// BRC-103 over the socket and answers CORS itself, so it is mounted ahead
+	// of both the HTTP auth middleware and corsHandler, whose wildcard headers
+	// would otherwise be sent twice.
+	closeLive := func() {}
+	if cfg.EnableWebsockets {
+		io := livesocket.NewServer(livesocket.Options{})
+		// Closed before server.Shutdown, which does not track upgraded
+		// connections and would otherwise wait out open long-polls.
+		closeLive = func() { io.Close(nil) }
+		srv.AttachWebSockets(io, livesocket.NewRegistry(livesocket.Limits{
+			MaxConnections:            cfg.WebSocketMaxConnections,
+			MaxConnectionsPerIdentity: cfg.WebSocketMaxConnectionsPerIdentity,
+			MaxRoomsPerConnection:     cfg.WebSocketMaxRoomsPerConnection,
+			ControlRatePerMinute:      cfg.WebSocketControlRateLimit,
+			SendRatePerMinute:         cfg.WebSocketSendRateLimit,
+			MaxRecipientConnections:   cfg.WebSocketMaxRecipientConnections,
+			MaxMessageBodyBytes:       cfg.MaxMessageBodyBytes,
+		}))
+		top := http.NewServeMux()
+		top.Handle(livesocket.Path, io.ServeHandler(nil))
+		top.Handle("/", handler)
+		handler = top
+		logger.Log("live delivery enabled", "path", livesocket.Path)
 	}
 
 	server := &http.Server{
@@ -248,6 +289,7 @@ func main() {
 
 	logger.Log("shutting down...")
 	stopSweep()
+	closeLive()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

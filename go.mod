@@ -7,11 +7,16 @@ require (
 	github.com/bsv-blockchain/go-bsv-middleware v0.16.3
 	github.com/bsv-blockchain/go-sdk v1.7.4
 	github.com/bsv-blockchain/go-wallet-toolbox v0.191.4
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.53
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
+	github.com/zishang520/socket.io/clients/engine/v3 v3.0.6
+	github.com/zishang520/socket.io/clients/socket/v3 v3.0.6
+	github.com/zishang520/socket.io/servers/socket/v3 v3.0.6
+	github.com/zishang520/socket.io/v3 v3.0.6
 	go.mongodb.org/mongo-driver/v2 v2.9.3
 	google.golang.org/api v0.310.0
 )
@@ -35,6 +40,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.62.0 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/MicahParks/keyfunc v1.9.0 // indirect
+	github.com/andybalholm/brotli v1.2.4 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.47.3 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.22 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.33.9 // indirect
@@ -120,7 +126,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.24 // indirect
 	github.com/googleapis/gax-go/v2 v2.27.0 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
+	github.com/gookit/color v1.6.1 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.1 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
@@ -240,6 +246,8 @@ require (
 	github.com/twmb/franz-go/pkg/kmsg v1.15.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wadey/gocovmerge v0.0.0-20160331181800-b5bfa59ec0ad // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
@@ -247,8 +255,12 @@ require (
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/xo/terminfo v1.2.0 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
+	github.com/zishang520/socket.io/parsers/engine/v3 v3.0.6 // indirect
+	github.com/zishang520/socket.io/parsers/socket/v3 v3.0.6 // indirect
+	github.com/zishang520/socket.io/servers/engine/v3 v3.0.6 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.47.0 // indirect
@@ -316,21 +328,15 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.60.1 // indirect
+	resty.dev/v3 v3.0.0-rc.4 // indirect
 	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-// Copied from go-wallet-toolbox v0.186.3's go.mod: Go ignores replace directives
-// from dependencies, so library consumers must repeat them. go-libp2p v0.49.0 does
-// not compile against webtransport-go v0.12.0+, and kube-openapi newer than
+// Copied from go-wallet-toolbox's go.mod: Go ignores replace directives from
+// dependencies, so library consumers must repeat them. kube-openapi newer than
 // ...20260721 switched to structured-merge-diff/v7, breaking apimachinery v0.37.0.
 // See https://github.com/bsv-blockchain/go-wallet-toolbox/issues/983.
-replace github.com/libp2p/go-libp2p => github.com/libp2p/go-libp2p v0.48.1-0.20260709142922-ec408fcc60c9
-
-replace github.com/quic-go/webtransport-go => github.com/quic-go/webtransport-go v0.11.1
-
-replace github.com/quic-go/quic-go => github.com/quic-go/quic-go v0.60.0
-
 replace k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad

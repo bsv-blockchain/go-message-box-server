@@ -80,6 +80,17 @@ type Config struct {
 	ListMaxLimit         int
 	ListMaxOffset        int
 	ListMaxResponseBytes int
+
+	// Live-delivery (Socket.IO) bounds, used when EnableWebsockets is set.
+	// Names and defaults match the TS reference server's "standard" resource
+	// profile; -1 means no limit.
+	WebSocketMaxConnections            int
+	WebSocketMaxConnectionsPerIdentity int
+	WebSocketMaxRoomsPerConnection     int
+	WebSocketControlRateLimit          int
+	WebSocketSendRateLimit             int
+	WebSocketMaxRecipientConnections   int
+	MaxMessageBodyBytes                int
 }
 
 // AppleStoreConfig is an App Store Connect in-app purchase key. Configured
@@ -268,6 +279,24 @@ func Load() (*Config, error) {
 	cfg.ListMaxLimit = listMaxLimit
 	cfg.ListMaxOffset = listMaxOffset
 	cfg.ListMaxResponseBytes = listMaxResponseBytes
+
+	for _, b := range []struct {
+		dst      *int
+		key      string
+		fallback int
+	}{
+		{&cfg.WebSocketMaxConnections, "WEBSOCKET_MAX_CONNECTIONS", 1_000},
+		{&cfg.WebSocketMaxConnectionsPerIdentity, "WEBSOCKET_MAX_CONNECTIONS_PER_IDENTITY", 25},
+		{&cfg.WebSocketMaxRoomsPerConnection, "WEBSOCKET_MAX_ROOMS_PER_CONNECTION", 128},
+		{&cfg.WebSocketControlRateLimit, "WEBSOCKET_CONTROL_RATE_LIMIT", 600},
+		{&cfg.WebSocketSendRateLimit, "WEBSOCKET_SEND_RATE_LIMIT", 300},
+		{&cfg.WebSocketMaxRecipientConnections, "WEBSOCKET_MAX_RECIPIENT_CONNECTIONS", 25},
+		{&cfg.MaxMessageBodyBytes, "MAX_MESSAGE_BODY_BYTES", 1024 * 1024},
+	} {
+		if *b.dst, err = getEnvListBound(b.key, b.fallback); err != nil {
+			return nil, err
+		}
+	}
 
 	port := getEnv("PORT", "")
 	if port == "" {

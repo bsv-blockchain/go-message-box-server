@@ -14,6 +14,7 @@ import (
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
@@ -55,6 +56,10 @@ type Server struct {
 	// valid value: NewServer seeds it with defaultListMessagesConfig, and
 	// SetListMessagesConfig replaces it wholesale.
 	listMessages ListMessagesConfig
+
+	// live pushes stored messages to joined sockets; nil until
+	// AttachWebSockets, and then never reassigned.
+	live *livesocket.Registry
 }
 
 // NewServer creates instance of Server used by all handlers.
