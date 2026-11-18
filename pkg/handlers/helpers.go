@@ -57,6 +57,10 @@ type Server struct {
 	// SetListMessagesConfig replaces it wholesale.
 	listMessages ListMessagesConfig
 
+	// maxBodyBytes caps a sent message body (MAX_MESSAGE_BODY_BYTES) on HTTP
+	// and socket sends alike; -1 or 0 means no cap.
+	maxBodyBytes int
+
 	// live pushes stored messages to joined sockets; nil until
 	// AttachWebSockets, and then never reassigned.
 	live *livesocket.Registry
@@ -68,8 +72,15 @@ func NewServer(store storage.Store, wallet sdk.Interface) *Server {
 		Store:        store,
 		wallet:       wallet,
 		listMessages: defaultListMessagesConfig(),
+		maxBodyBytes: DefaultMaxMessageBodyBytes,
 	}
 }
+
+// DefaultMaxMessageBodyBytes is the TS server's MAX_MESSAGE_BODY_BYTES default.
+const DefaultMaxMessageBodyBytes = 1 << 20
+
+// SetMaxMessageBodyBytes replaces the message body cap; -1 means no cap.
+func (s *Server) SetMaxMessageBodyBytes(n int) { s.maxBodyBytes = n }
 
 // SetListMessagesConfig replaces the POST /listMessages pagination bounds.
 // Callers normally derive c from *config.Config once at startup; tests that

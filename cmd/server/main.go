@@ -139,6 +139,7 @@ func main() {
 	defer walletCleanup()
 
 	srv := handlers.NewServer(store, w)
+	srv.SetMaxMessageBodyBytes(cfg.MaxMessageBodyBytes)
 	srv.SetListMessagesConfig(handlers.ListMessagesConfig{
 		DefaultLimit:     cfg.ListDefaultLimit,
 		MaxLimit:         cfg.ListMaxLimit,
@@ -187,27 +188,17 @@ func main() {
 	// Auth middleware
 	authMiddleware := middleware.NewAuth(w)
 
-	// Payment middleware (returns 0 for now, matching the original)
+	// Payment middleware (returns 0 for now, matching the original). The socket
+	// sendMessage event bypasses this middleware: before pricing anything here,
+	// refuse that event as the TS server does (ERR_PAYMENT_REQUIRES_AUTHFETCH).
 	paymentMiddleware := middleware.NewPayment(w, middleware.WithRequestPriceCalculator(func(_ *http.Request) (int, error) {
 		return 0, nil
 	}))
 
 	// create root mux for swagger to avoid auth
 	rootMux := http.NewServeMux()
-	// Readiness, as the TS server's GET /ready: 200 once the store answers a
-	// query, 503 while it does not. Outside auth, for probes and orchestrators.
-	rootMux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/json")
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		if _, err := store.GetServerDeliveryFee(ctx, "notifications"); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"error","code":"ERR_NOT_READY","description":"Message Box dependencies are not ready."}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
-	})
+	// Outside auth, for probes and orchestrators.
+	rootMux.Handle("GET /ready", readyHandler(store))
 	rootMux.Handle("GET /swagger/", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
 	))
@@ -259,7 +250,7 @@ func main() {
 			ControlRatePerMinute:      cfg.WebSocketControlRateLimit,
 			SendRatePerMinute:         cfg.WebSocketSendRateLimit,
 			MaxRecipientConnections:   cfg.WebSocketMaxRecipientConnections,
-			MaxMessageBodyBytes:       cfg.MaxMessageBodyBytes,
+			AuthTimeout:               livesocket.DefaultAuthTimeout,
 		}))
 		top := http.NewServeMux()
 		top.Handle(livesocket.Path, io.ServeHandler(nil))

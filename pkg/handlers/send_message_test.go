@@ -54,3 +54,27 @@ func TestSendMessage_DuplicateLogsNoIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+// MAX_MESSAGE_BODY_BYTES caps HTTP sends as the TS route does: 413
+// ERR_MESSAGE_BODY_TOO_LARGE, measured in UTF-8 bytes of the string body.
+func TestSendMessage_BodyLimit(t *testing.T) {
+	srv := setupTestServer(t)
+	srv.SetMaxMessageBodyBytes(4)
+	sender, recipient := testKey(t).PubKey().ToDERHex(), testKey(t).PubKey().ToDERHex()
+	send := func(id string, body any) *httptest.ResponseRecorder {
+		r := httptest.NewRequestWithContext(t.Context(), "POST", "/sendMessage", bytes.NewReader(mustMarshal(t, map[string]any{"message": map[string]any{
+			"recipient": recipient, "messageBox": "payment_inbox", "messageId": id, "body": body,
+		}})))
+		w := httptest.NewRecorder()
+		srv.sendMessage(w, r, sender)
+		return w
+	}
+
+	wantStatus(t, send("at-limit", "abcd"), 200, "")
+	wantStatus(t, send("ascii", "abcde"), 413, "ERR_MESSAGE_BODY_TOO_LARGE")
+	wantStatus(t, send("utf8", "ééé"), 413, "ERR_MESSAGE_BODY_TOO_LARGE") // 3 runes, 6 bytes
+	wantStatus(t, send("object", map[string]any{"k": "v"}), 413, "ERR_MESSAGE_BODY_TOO_LARGE")
+
+	srv.SetMaxMessageBodyBytes(-1)
+	wantStatus(t, send("unlimited", strings.Repeat("x", 2<<20)), 200, "")
+}

@@ -181,7 +181,7 @@ func Load() (*Config, error) {
 		NodeEnv:          getEnv("NODE_ENV", "development"),
 		RoutingPrefix:    getEnv("ROUTING_PREFIX", ""),
 		ServerPrivateKey: os.Getenv("SERVER_PRIVATE_KEY"),
-		EnableWebsockets: getEnv("ENABLE_WEBSOCKETS", "true") == "true",
+		EnableWebsockets: getEnv("ENABLE_WEBSOCKETS", "false") == "true",
 		StorageBackend:   getEnv("STORAGE_BACKEND", "sql"),
 		MongoURI:         getEnv("MONGO_URI", "mongodb://localhost:27017"),
 		MongoDatabase:    getEnv("MONGO_DATABASE", "messagebox"),

@@ -19,7 +19,10 @@ type Limits struct {
 	ControlRatePerMinute      int // WEBSOCKET_CONTROL_RATE_LIMIT (joinRoom, leaveRoom)
 	SendRatePerMinute         int // WEBSOCKET_SEND_RATE_LIMIT
 	MaxRecipientConnections   int // WEBSOCKET_MAX_RECIPIENT_CONNECTIONS, per pushed message
-	MaxMessageBodyBytes       int // MAX_MESSAGE_BODY_BYTES
+
+	// AuthTimeout is how long a connected socket may hold a connection slot
+	// before it emits authenticated; 0 means no deadline.
+	AuthTimeout time.Duration
 }
 
 // DefaultLimits is the TypeScript server's "standard" profile.
@@ -31,9 +34,14 @@ func DefaultLimits() Limits {
 		ControlRatePerMinute:      600,
 		SendRatePerMinute:         300,
 		MaxRecipientConnections:   25,
-		MaxMessageBodyBytes:       1 << 20,
+		AuthTimeout:               DefaultAuthTimeout,
 	}
 }
+
+// DefaultAuthTimeout bounds how long a socket that has not authenticated
+// counts against MaxConnections. Without it, idle sockets that never sign
+// anything could hold every slot.
+const DefaultAuthTimeout = 30 * time.Second
 
 // pushTimeout bounds one signed push to one socket.
 const pushTimeout = 10 * time.Second
@@ -70,7 +78,8 @@ func (r *Registry) Limits() Limits { return r.limits }
 
 // Register adds a connected socket and removes it again on disconnect. It
 // reports false, registering nothing, when the process is at its connection
-// limit.
+// limit. A socket that Authenticate has not bound within AuthTimeout is
+// dropped.
 func (r *Registry) Register(a *AuthSocket) bool {
 	id := string(a.Socket().Id())
 	r.mu.Lock()
@@ -92,6 +101,14 @@ func (r *Registry) Register(a *AuthSocket) bool {
 	if !a.Socket().Connected() {
 		remove()
 		return false
+	}
+	if d := r.limits.AuthTimeout; d > 0 {
+		time.AfterFunc(d, func() {
+			if r.Identity(id) == "" && a.Socket().Connected() {
+				slog.Warn("dropping socket: not authenticated in time", "sid", id)
+				Drop(a.Socket())
+			}
+		})
 	}
 	return true
 }

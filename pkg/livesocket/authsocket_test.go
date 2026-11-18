@@ -170,3 +170,58 @@ func TestMalformedAuthMessageDisconnects(t *testing.T) {
 		t.Fatal("server kept a socket that sent a malformed authMessage")
 	}
 }
+
+// TestIdentityChangeDisconnects checks that once a socket is bound to one
+// identity, a signed message from another identity on it drops the socket.
+func TestIdentityChangeDisconnects(t *testing.T) {
+	ts, accepted := newAuthServer(t)
+	c := dial(t, ts.URL)
+	gone := make(chan struct{}, 1)
+	_ = c.On("disconnect", func(...any) {
+		select {
+		case gone <- struct{}{}:
+		default:
+		}
+	})
+	for deadline := time.Now().Add(5 * time.Second); !c.Connected(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no connect")
+		}
+	}
+
+	// Two Peers share the socket. Each sees the other's handshake replies,
+	// which it cannot match to a session of its own; those errors are expected.
+	peer := func() (*auth.Peer, chan []byte) {
+		w, _ := newWallet(t)
+		tr := livesocket.NewTransport(c.Emit, func(error) {})
+		_ = c.On(livesocket.AuthMessageEvent, tr.Receive)
+		p := auth.NewPeer(&auth.PeerOptions{Wallet: w, Transport: tr})
+		got := make(chan []byte, 4)
+		p.ListenForGeneralMessages(func(_ context.Context, _ *ec.PublicKey, payload []byte) error {
+			got <- payload
+			return nil
+		})
+		return p, got
+	}
+	first, pongs := peer()
+	second, _ := peer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := first.ToPeer(ctx, encodeEvent(t, "ping", nil), nil, 10_000); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-pongs:
+	case <-ctx.Done():
+		t.Fatal("no pong for the first identity")
+	}
+	a := <-accepted
+
+	_ = second.ToPeer(ctx, encodeEvent(t, "ping", nil), nil, 10_000)
+	select {
+	case <-gone:
+	case <-ctx.Done():
+		t.Fatalf("socket bound to %s kept after a message from another identity", a.IdentityKey().ToDERHex())
+	}
+}

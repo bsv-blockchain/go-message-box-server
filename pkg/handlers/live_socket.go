@@ -167,7 +167,9 @@ func (c *liveConn) leaveRoom(data any) {
 // (permissions, fees, duplicates), then acks the sender. Storing it announces
 // it to the recipient's sockets, as an HTTP send does. A recipient fee makes
 // the route ask for a payment the socket event cannot carry, so such a send
-// is acked as an error and the client falls back to HTTP.
+// is acked as an error and the client falls back to HTTP. This path skips the
+// BRC-105 payment middleware, which is safe only while its price is 0 (see
+// cmd/server/main.go).
 func (c *liveConn) sendMessage(data any) {
 	if !c.sendLimit.Allow() {
 		c.reply("messageFailed", map[string]any{"reason": "WebSocket send rate limit exceeded", "code": "ERR_WEBSOCKET_RATE_LIMITED"})
@@ -183,7 +185,7 @@ func (c *liveConn) sendMessage(data any) {
 		c.reply("paymentFailed", map[string]any{"reason": "Unauthorized: WebSocket not authenticated"})
 		return
 	}
-	room, msg, reason := validateLiveMessage(d["roomId"], d["message"], c.reg.Limits().MaxMessageBodyBytes)
+	room, msg, reason := validateLiveMessage(d["roomId"], d["message"], c.s.maxBodyBytes)
 	if reason != "" {
 		c.reply("messageFailed", map[string]any{"reason": reason})
 		return
@@ -237,7 +239,7 @@ func validateLiveMessage(roomID, message any, maxBodyBytes int) (string, liveMes
 		return "", liveMessage{}, "Invalid message object"
 	}
 	body, ok := m["body"].(string)
-	if !ok || jsBlank(body) || (maxBodyBytes != -1 && len(body) > maxBodyBytes) {
+	if !ok || jsBlank(body) || (maxBodyBytes > 0 && len(body) > maxBodyBytes) {
 		return "", liveMessage{}, "Invalid message body"
 	}
 	recipient, ok := m["recipient"].(string)

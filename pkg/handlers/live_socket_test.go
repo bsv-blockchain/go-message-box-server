@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/zishang520/socket.io/v3/pkg/types"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
 // The box postSendMessage uses; free under the default fee policy.
@@ -145,6 +148,26 @@ func (lc *liveClient) authenticate() {
 	}
 }
 
+// expectNothing fails if any event arrives within wait.
+func (lc *liveClient) expectNothing(wait time.Duration) {
+	lc.t.Helper()
+	select {
+	case ev := <-lc.events:
+		lc.t.Fatalf("unexpected event %s %v", ev.Name, ev.Data)
+	case <-time.After(wait):
+	}
+}
+
+// expectGone fails unless the server drops the socket within 5 s.
+func (lc *liveClient) expectGone(what string) {
+	lc.t.Helper()
+	select {
+	case <-lc.gone:
+	case <-time.After(5 * time.Second):
+		lc.t.Fatalf("socket kept: %s", what)
+	}
+}
+
 func wantFields(t *testing.T, what string, got map[string]any, want map[string]any) {
 	t.Helper()
 	for k, v := range want {
@@ -190,6 +213,21 @@ func TestLiveSocket_SendAndPush(t *testing.T) {
 	wantFields(t, "HTTP push", alice.expect("sendMessage-"+room),
 		map[string]any{"sender": bob.identity, "messageId": "m-2", "body": "ciphertext"})
 
+	// A paid send is stored but not pushed: listMessages internalizes its
+	// payment, and a pushed copy could be acknowledged before that.
+	paid := mustMarshal(t, map[string]any{
+		"message": map[string]any{"recipient": alice.identity, "messageBox": liveBox, "messageId": "m-paid", "body": "paid"},
+		"payment": map[string]any{"description": "fee"},
+	})
+	w := httptest.NewRecorder()
+	srv.sendMessage(w, httptest.NewRequestWithContext(t.Context(), "POST", "/sendMessage", bytes.NewReader(paid)), bob.identity)
+	wantStatus(t, w, 200, "")
+	alice.expectNothing(time.Second)
+	stored, err = srv.Store.ListMessages(context.Background(), alice.identity, liveBox)
+	if err != nil || !slices.ContainsFunc(stored, func(m storage.Message) bool { return m.MessageID == "m-paid" }) {
+		t.Fatalf("stored %+v, %v; want m-paid stored", stored, err)
+	}
+
 	// A batch send pushes each recipient its own stored copy.
 	carol := dialLive(t, url)
 	carol.authenticate()
@@ -203,7 +241,7 @@ func TestLiveSocket_SendAndPush(t *testing.T) {
 		"body":       "to both",
 	}})
 	r := httptest.NewRequestWithContext(t.Context(), "POST", "/sendMessage", bytes.NewReader(batch))
-	w := httptest.NewRecorder()
+	w = httptest.NewRecorder()
 	srv.sendMessage(w, r, bob.identity)
 	wantStatus(t, w, 200, "")
 	wantFields(t, "batch push to alice", alice.expect("sendMessage-"+room), map[string]any{"messageId": "m-3a", "body": "to both"})
@@ -314,4 +352,121 @@ func TestValidateLiveMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLiveSocket_ConnectionLimit checks that a socket over
+// WEBSOCKET_MAX_CONNECTIONS is dropped on connect.
+func TestLiveSocket_ConnectionLimit(t *testing.T) {
+	limits := livesocket.DefaultLimits()
+	limits.MaxConnections = 1
+	_, url := newLiveServer(t, limits)
+	first := dialLive(t, url)
+	opts := client.DefaultOptions()
+	opts.SetReconnection(false)
+	opts.SetForceNew(true)
+	opts.SetTransports(types.NewSet[engine.TransportCtor](&engine.WebSocketBuilder{}))
+	c, err := client.Connect(url, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Disconnect() })
+	// The socket connects and is dropped at once, too fast for dialLive's wait.
+	gone := make(chan string, 1)
+	_ = c.On("disconnect", func(args ...any) {
+		select {
+		case gone <- fmt.Sprint(args[0]):
+		default:
+		}
+	})
+	select {
+	case reason := <-gone:
+		if reason != "io server disconnect" {
+			t.Fatalf("over-limit socket saw %q, want io server disconnect", reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("socket kept over the process connection limit")
+	}
+	first.authenticate()
+}
+
+// TestLiveSocket_AuthTimeout checks that a socket which never emits
+// authenticated is dropped, so idle sockets cannot hold every slot, and that
+// an authenticated one is kept.
+func TestLiveSocket_AuthTimeout(t *testing.T) {
+	limits := livesocket.DefaultLimits()
+	limits.AuthTimeout = time.Second
+	_, url := newLiveServer(t, limits)
+	idle, authed := dialLive(t, url), dialLive(t, url)
+	authed.authenticate()
+	idle.expectGone("never authenticated")
+	select {
+	case <-authed.gone:
+		t.Fatal("authenticated socket dropped")
+	case <-time.After(time.Second):
+	}
+}
+
+// TestLiveSocket_RoomLimit checks the WEBSOCKET_MAX_ROOMS_PER_CONNECTION
+// refusal, and that rejoining a joined room does not count against it.
+func TestLiveSocket_RoomLimit(t *testing.T) {
+	limits := livesocket.DefaultLimits()
+	limits.MaxRoomsPerConnection = 2
+	_, url := newLiveServer(t, limits)
+	c := dialLive(t, url)
+	c.authenticate()
+	for _, box := range []string{"a", "b", "a"} {
+		c.emit("joinRoom", c.identity+"-"+box)
+		c.expect("joinedRoom")
+	}
+	c.emit("joinRoom", c.identity+"-c")
+	wantFields(t, "third room", c.expect("joinFailed"),
+		map[string]any{"roomId": c.identity + "-c", "code": "ERR_WEBSOCKET_ROOM_LIMIT"})
+}
+
+// TestLiveSocket_NewestRecipientsFirst checks that with more joined sockets
+// than WEBSOCKET_MAX_RECIPIENT_CONNECTIONS, the push goes to the newest.
+func TestLiveSocket_NewestRecipientsFirst(t *testing.T) {
+	limits := livesocket.DefaultLimits()
+	limits.MaxRecipientConnections = 1
+	srv, url := newLiveServer(t, limits)
+	w, identity := newProtoWallet(t)
+	room := identity + "-" + liveBox
+	old, newest := dialLiveAs(t, url, w, identity), dialLiveAs(t, url, w, identity)
+	for _, c := range []*liveClient{newest, old} { // join order must not matter
+		c.authenticate()
+		c.emit("joinRoom", room)
+		c.expect("joinedRoom")
+	}
+	wantStatus(t, postSendMessage(t, srv, mockIdentityKey, identity, "m"), 200, "")
+	wantFields(t, "push to the newest socket", newest.expect("sendMessage-"+room), map[string]any{"messageId": "m"})
+	old.expectNothing(time.Second)
+}
+
+// TestLiveSocket_RateLimits checks the send and control limits and their
+// reply codes.
+func TestLiveSocket_RateLimits(t *testing.T) {
+	limits := livesocket.DefaultLimits()
+	limits.SendRatePerMinute = 1
+	limits.ControlRatePerMinute = 1
+	_, url := newLiveServer(t, limits)
+	c := dialLive(t, url)
+	c.authenticate()
+	room := c.identity + "-" + liveBox
+
+	c.emit("joinRoom", room)
+	c.expect("joinedRoom")
+	c.emit("joinRoom", room)
+	wantFields(t, "second join", c.expect("joinFailed"), map[string]any{"code": "ERR_WEBSOCKET_CONTROL_RATE_LIMITED"})
+	c.emit("leaveRoom", room)
+	wantFields(t, "leave", c.expect("leaveFailed"), map[string]any{"code": "ERR_WEBSOCKET_CONTROL_RATE_LIMITED"})
+
+	// To a recipient with no socket, so the ack is the only reply.
+	other := mockIdentityKey + "-" + liveBox
+	send := func(id string) {
+		c.emit("sendMessage", map[string]any{"roomId": other, "message": map[string]any{"messageId": id, "recipient": mockIdentityKey, "body": "x"}})
+	}
+	send("m-1")
+	wantFields(t, "first send", c.expect("sendMessageAck-"+other), map[string]any{"status": "success"})
+	send("m-2")
+	wantFields(t, "second send", c.expect("messageFailed"), map[string]any{"code": "ERR_WEBSOCKET_RATE_LIMITED"})
 }
