@@ -291,6 +291,8 @@ Live delivery (`ENABLE_WEBSOCKETS=true`) and message sends read seven more, all 
 | `WEBSOCKET_MAX_RECIPIENT_CONNECTIONS`    | `25`              | Sockets one stored message is pushed to; the newest joined sockets win                                                 |
 | `MAX_MESSAGE_BODY_BYTES`                 | `1048576` (1 MiB) | Largest message body, in UTF-8 bytes, on HTTP and socket sends alike (HTTP: `413 ERR_MESSAGE_BODY_TOO_LARGE`)           |
 
+The per-identity limit does not stop one client from filling `WEBSOCKET_MAX_CONNECTIONS`: identity keys cost nothing to create, so many throwaway identities can each hold their 25 sockets. Run live delivery behind a proxy that limits connections per client IP.
+
 The optional paymail profile lookup reads its own settings, listed under **Paymail Profile Lookup** below, and paid handles theirs under **Paid Handles**.
 
 </details>

@@ -58,7 +58,8 @@ type Server struct {
 	listMessages ListMessagesConfig
 
 	// maxBodyBytes caps a sent message body (MAX_MESSAGE_BODY_BYTES) on HTTP
-	// and socket sends alike; -1 or 0 means no cap.
+	// and socket sends alike; -1 means no cap, as does 0, the zero value of a
+	// Server not built by NewServer.
 	maxBodyBytes int
 
 	// live pushes stored messages to joined sockets; nil until

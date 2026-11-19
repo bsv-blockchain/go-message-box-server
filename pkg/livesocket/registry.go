@@ -66,6 +66,10 @@ type entry struct {
 	seq      uint64 // registration order, for newest-first bounding
 	identity string // empty until Authenticate
 	rooms    map[string]struct{}
+
+	// authTimer drops the socket at AuthTimeout; stopped by Authenticate and
+	// on disconnect, so it does not hold the socket for the full timeout.
+	authTimer *time.Timer
 }
 
 // NewRegistry returns an empty registry enforcing limits.
@@ -88,13 +92,23 @@ func (r *Registry) Register(a *AuthSocket) bool {
 		return false
 	}
 	r.seq++
-	r.conns[id] = &entry{sock: a, seq: r.seq, rooms: map[string]struct{}{}}
+	e := &entry{sock: a, seq: r.seq, rooms: map[string]struct{}{}}
+	if d := r.limits.AuthTimeout; d > 0 {
+		e.authTimer = time.AfterFunc(d, func() {
+			if r.Identity(id) == "" && a.Socket().Connected() {
+				slog.Warn("dropping socket: not authenticated in time", "sid", id)
+				Drop(a.Socket())
+			}
+		})
+	}
+	r.conns[id] = e
 	r.mu.Unlock()
 
 	remove := func(...any) {
 		r.mu.Lock()
 		delete(r.conns, id)
 		r.mu.Unlock()
+		e.stopAuthTimer()
 	}
 	_ = a.Socket().On("disconnect", remove)
 	// disconnect runs off the socket's queue, so it may already have fired.
@@ -102,15 +116,13 @@ func (r *Registry) Register(a *AuthSocket) bool {
 		remove()
 		return false
 	}
-	if d := r.limits.AuthTimeout; d > 0 {
-		time.AfterFunc(d, func() {
-			if r.Identity(id) == "" && a.Socket().Connected() {
-				slog.Warn("dropping socket: not authenticated in time", "sid", id)
-				Drop(a.Socket())
-			}
-		})
-	}
 	return true
+}
+
+func (e *entry) stopAuthTimer() {
+	if e.authTimer != nil {
+		e.authTimer.Stop()
+	}
 }
 
 // Authenticate binds identity to a registered socket. It reports false for an
@@ -138,6 +150,7 @@ func (r *Registry) Authenticate(socketID, identity string) bool {
 		}
 	}
 	e.identity = identity
+	e.stopAuthTimer()
 	return true
 }
 

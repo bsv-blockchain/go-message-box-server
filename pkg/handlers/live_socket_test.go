@@ -470,3 +470,20 @@ func TestLiveSocket_RateLimits(t *testing.T) {
 	send("m-2")
 	wantFields(t, "second send", c.expect("messageFailed"), map[string]any{"code": "ERR_WEBSOCKET_RATE_LIMITED"})
 }
+
+// TestLiveSocket_BodyLimit checks that a socket send is held to the server's
+// MAX_MESSAGE_BODY_BYTES, the same cap as an HTTP send.
+func TestLiveSocket_BodyLimit(t *testing.T) {
+	srv, url := newLiveServer(t, livesocket.DefaultLimits())
+	srv.SetMaxMessageBodyBytes(4)
+	c := dialLive(t, url)
+	c.authenticate()
+	room := mockIdentityKey + "-" + liveBox
+	send := func(id, body string) {
+		c.emit("sendMessage", map[string]any{"roomId": room, "message": map[string]any{"messageId": id, "recipient": mockIdentityKey, "body": body}})
+	}
+	send("at-limit", "abcd")
+	wantFields(t, "at the cap", c.expect("sendMessageAck-"+room), map[string]any{"status": "success"})
+	send("over", "abcde")
+	wantFields(t, "over the cap", c.expect("messageFailed"), map[string]any{"reason": "Invalid message body"})
+}
