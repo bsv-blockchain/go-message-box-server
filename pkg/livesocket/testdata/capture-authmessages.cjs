@@ -26,5 +26,7 @@ class Mem {
   const payload = Utils.toArray(JSON.stringify({ eventName: 'sendMessage', data: { body: 'h\u00e9llo <&> \u{1F642}' } }), 'utf8')
   await pa.toPeer(payload, kb.toPublicKey().toString())
   await got
-  process.stdout.write(JSON.stringify({ client: ka.toPublicKey().toString(), server: kb.toPublicKey().toString(), frames }))
+  // 4-space indent and a final newline: the layout magex format:fix gives JSON
+  const fixture = { client: ka.toPublicKey().toString(), server: kb.toPublicKey().toString(), frames }
+  process.stdout.write(JSON.stringify(fixture, null, 4) + '\n')
 })().catch(e => { console.error(e); process.exit(1) })

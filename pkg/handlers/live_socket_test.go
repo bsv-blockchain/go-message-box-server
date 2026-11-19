@@ -168,7 +168,7 @@ func (lc *liveClient) expectGone(what string) {
 	}
 }
 
-func wantFields(t *testing.T, what string, got map[string]any, want map[string]any) {
+func wantFields(t *testing.T, what string, got, want map[string]any) {
 	t.Helper()
 	for k, v := range want {
 		if got[k] != v {
