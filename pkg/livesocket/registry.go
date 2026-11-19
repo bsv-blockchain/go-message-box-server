@@ -107,8 +107,8 @@ func (r *Registry) Register(a *AuthSocket) bool {
 	remove := func(...any) {
 		r.mu.Lock()
 		delete(r.conns, id)
+		e.stopAuthTimer() // under the lock: once the entry is gone, so is the timer
 		r.mu.Unlock()
-		e.stopAuthTimer()
 	}
 	_ = a.Socket().On("disconnect", remove)
 	// disconnect runs off the socket's queue, so it may already have fired.

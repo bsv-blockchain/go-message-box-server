@@ -36,6 +36,8 @@ coverage.out
 
 # Fuzz Tests
 testdata
+# ...except fixtures that tests read
+!pkg/livesocket/testdata/
 
 # AI Models
 .claude
