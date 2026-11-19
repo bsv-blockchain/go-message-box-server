@@ -75,10 +75,13 @@ func dialLive(t *testing.T, url string) *liveClient {
 	return dialLiveAs(t, url, w, identity)
 }
 
-// dialLiveAs connects with its own Peer, and so its own session, for w.
-func dialLiveAs(t *testing.T, url string, w wallet.Interface, identity string) *liveClient {
+// newLiveSocket returns a Socket.IO client for url that has not started
+// connecting. The client emits each event once, on its own goroutine, to the
+// handlers attached at that moment, so attach them before calling Connect.
+func newLiveSocket(t *testing.T, url string) *client.Socket {
 	t.Helper()
 	opts := client.DefaultOptions()
+	opts.SetAutoConnect(false)
 	opts.SetReconnection(false)
 	opts.SetForceNew(true) // the client otherwise shares one Manager per URL
 	// WebSocket only: see the note in pkg/livesocket/authsocket_test.go.
@@ -88,7 +91,13 @@ func dialLiveAs(t *testing.T, url string, w wallet.Interface, identity string) *
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Disconnect() })
+	return c
+}
 
+// dialLiveAs connects with its own Peer, and so its own session, for w.
+func dialLiveAs(t *testing.T, url string, w wallet.Interface, identity string) *liveClient {
+	t.Helper()
+	c := newLiveSocket(t, url)
 	lc := &liveClient{t: t, identity: identity, events: make(chan liveEvent, 16), gone: make(chan struct{})}
 	tr := livesocket.NewTransport(c.Emit, func(err error) { t.Error(err) })
 	_ = c.On(livesocket.AuthMessageEvent, tr.Receive)
@@ -103,6 +112,7 @@ func dialLiveAs(t *testing.T, url string, w wallet.Interface, identity string) *
 		lc.events <- ev
 		return nil
 	})
+	c.Connect()
 	// The zishang520 client can lose an Emit made before it has connected.
 	for deadline := time.Now().Add(5 * time.Second); !c.Connected(); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -355,21 +365,19 @@ func TestValidateLiveMessage(t *testing.T) {
 }
 
 // TestLiveSocket_ConnectionLimit checks that a socket over
-// WEBSOCKET_MAX_CONNECTIONS is dropped on connect.
+// WEBSOCKET_MAX_CONNECTIONS is dropped on connect, and that the socket
+// holding the slot is still served.
 func TestLiveSocket_ConnectionLimit(t *testing.T) {
 	limits := livesocket.DefaultLimits()
 	limits.MaxConnections = 1
 	_, url := newLiveServer(t, limits)
 	first := dialLive(t, url)
-	opts := client.DefaultOptions()
-	opts.SetReconnection(false)
-	opts.SetForceNew(true)
-	opts.SetTransports(types.NewSet[engine.TransportCtor](&engine.WebSocketBuilder{}))
-	c, err := client.Connect(url, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Disconnect() })
+	// The server writes CONNECT before it registers the socket, so a client
+	// can be connected but not yet counted. Only the authenticated reply
+	// shows that first holds the one slot.
+	first.authenticate()
+
+	c := newLiveSocket(t, url)
 	// The socket connects and is dropped at once, too fast for dialLive's wait.
 	gone := make(chan string, 1)
 	_ = c.On("disconnect", func(args ...any) {
@@ -378,6 +386,7 @@ func TestLiveSocket_ConnectionLimit(t *testing.T) {
 		default:
 		}
 	})
+	c.Connect()
 	select {
 	case reason := <-gone:
 		if reason != "io server disconnect" {
@@ -386,7 +395,10 @@ func TestLiveSocket_ConnectionLimit(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("socket kept over the process connection limit")
 	}
-	first.authenticate()
+
+	room := first.identity + "-" + liveBox
+	first.emit("joinRoom", room)
+	wantFields(t, "first socket after the refusal", first.expect("joinedRoom"), map[string]any{"roomId": room})
 }
 
 // TestLiveSocket_AuthTimeout checks that a socket which never emits
