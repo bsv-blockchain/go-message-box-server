@@ -266,7 +266,7 @@ All endpoints below require BRC-31 authentication via the `go-bsv-middleware` au
 | `FIREBASE_PROJECT_ID`           | unset                        | Firebase project for FCM push notifications; unset disables push                                  |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | unset                        | Service account credentials as JSON (takes precedence over the path)                             |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | unset                        | Path to a service account credentials file                                                        |
-| `ENABLE_WEBSOCKETS`             | `true`                       | Enable WebSocket support (not yet implemented)                                                    |
+| `ENABLE_WEBSOCKETS`             | `false`                      | Serve Socket.IO live delivery at `/socket.io/` (TS-compatible; limits via `WEBSOCKET_*`)          |
 
 `POST /listMessages` pagination reads four more, all optional and matching the TS reference server's "standard" resource profile defaults:
 
@@ -278,6 +278,20 @@ All endpoints below require BRC-31 authentication via the `go-bsv-middleware` au
 | `LIST_MAX_RESPONSE_BYTES` | `8388608` (8 MiB) | Response byte budget for one page's `messages` array; `-1` means no cap. A single message that alone exceeds the budget fails the request with `413 ERR_MESSAGE_RESPONSE_TOO_LARGE` rather than being silently dropped |
 
 `LIST_DEFAULT_LIMIT` must not exceed `LIST_MAX_LIMIT` (when the latter is capped); the process refuses to start otherwise.
+
+Live delivery (`ENABLE_WEBSOCKETS=true`) and message sends read seven more, all optional and matching the TS reference server's "standard" resource profile defaults. Each takes a positive integer, or `-1` for no limit:
+
+| Variable                                 | Default           | Description                                                                                                            |
+|------------------------------------------|-------------------|------------------------------------------------------------------------------------------------------------------------|
+| `WEBSOCKET_MAX_CONNECTIONS`              | `1000`            | Sockets per process; a socket over the limit is disconnected. A socket that has not authenticated within 30 s is dropped |
+| `WEBSOCKET_MAX_CONNECTIONS_PER_IDENTITY` | `25`              | Authenticated sockets per identity key                                                                                 |
+| `WEBSOCKET_MAX_ROOMS_PER_CONNECTION`     | `128`             | Rooms one socket may join (`ERR_WEBSOCKET_ROOM_LIMIT`)                                                                 |
+| `WEBSOCKET_CONTROL_RATE_LIMIT`           | `600`             | `joinRoom` and `leaveRoom` events per socket per minute (`ERR_WEBSOCKET_CONTROL_RATE_LIMITED`)                         |
+| `WEBSOCKET_SEND_RATE_LIMIT`              | `300`             | `sendMessage` events per socket per minute (`ERR_WEBSOCKET_RATE_LIMITED`)                                              |
+| `WEBSOCKET_MAX_RECIPIENT_CONNECTIONS`    | `25`              | Sockets one stored message is pushed to; the newest joined sockets win                                                 |
+| `MAX_MESSAGE_BODY_BYTES`                 | `1048576` (1 MiB) | Largest message body, in UTF-8 bytes, on HTTP and socket sends alike (HTTP: `413 ERR_MESSAGE_BODY_TOO_LARGE`)           |
+
+The per-identity limit does not stop one client from filling `WEBSOCKET_MAX_CONNECTIONS`: identity keys cost nothing to create, so many throwaway identities can each hold their 25 sockets. Run live delivery behind a proxy that limits connections per client IP.
 
 The optional paymail profile lookup reads its own settings, listed under **Paymail Profile Lookup** below, and paid handles theirs under **Paid Handles**.
 

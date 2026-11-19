@@ -64,6 +64,10 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey s
 		writeError(w, 400, "ERR_INVALID_MESSAGE_BODY", "Invalid message body.")
 		return
 	}
+	if s.maxBodyBytes > 0 && messageBodyBytes(msg.Body) > s.maxBodyBytes {
+		writeError(w, 413, "ERR_MESSAGE_BODY_TOO_LARGE", fmt.Sprintf("Message bodies must not exceed %d bytes.", s.maxBodyBytes))
+		return
+	}
 
 	// Normalize recipients
 	recipientsRaw := msg.Recipients
@@ -313,9 +317,21 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey s
 	if results == nil {
 		results = []SendMessageResult{}
 	}
+	s.announceStored(writeCtx, senderKey, boxType, msg.Body, req.Payment != nil, results)
 	writeJSON(w, 200, SendMessageResponse{
 		Status:  statusSuccess,
 		Message: fmt.Sprintf("Your message has been sent to %d recipient(s).", len(results)),
 		Results: results,
 	})
+}
+
+// messageBodyBytes is the size MAX_MESSAGE_BODY_BYTES caps: the UTF-8 length
+// of a string body, as the TS server measures it, or the JSON length of any
+// other body, which the TS server would refuse outright.
+func messageBodyBytes(body json.RawMessage) int {
+	var text string
+	if json.Unmarshal(body, &text) == nil {
+		return len(text)
+	}
+	return len(body)
 }

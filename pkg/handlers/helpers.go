@@ -14,6 +14,7 @@ import (
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
@@ -55,6 +56,15 @@ type Server struct {
 	// valid value: NewServer seeds it with defaultListMessagesConfig, and
 	// SetListMessagesConfig replaces it wholesale.
 	listMessages ListMessagesConfig
+
+	// maxBodyBytes caps a sent message body (MAX_MESSAGE_BODY_BYTES) on HTTP
+	// and socket sends alike; -1 means no cap, as does 0, the zero value of a
+	// Server not built by NewServer.
+	maxBodyBytes int
+
+	// live pushes stored messages to joined sockets; nil until
+	// AttachWebSockets, and then never reassigned.
+	live *livesocket.Registry
 }
 
 // NewServer creates instance of Server used by all handlers.
@@ -63,8 +73,15 @@ func NewServer(store storage.Store, wallet sdk.Interface) *Server {
 		Store:        store,
 		wallet:       wallet,
 		listMessages: defaultListMessagesConfig(),
+		maxBodyBytes: DefaultMaxMessageBodyBytes,
 	}
 }
+
+// DefaultMaxMessageBodyBytes is the TS server's MAX_MESSAGE_BODY_BYTES default.
+const DefaultMaxMessageBodyBytes = 1 << 20
+
+// SetMaxMessageBodyBytes replaces the message body cap; -1 means no cap.
+func (s *Server) SetMaxMessageBodyBytes(n int) { s.maxBodyBytes = n }
 
 // SetListMessagesConfig replaces the POST /listMessages pagination bounds.
 // Callers normally derive c from *config.Config once at startup; tests that

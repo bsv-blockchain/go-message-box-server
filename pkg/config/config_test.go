@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -375,5 +376,72 @@ func TestLoad_Purchases(t *testing.T) {
 	t.Setenv("PAYMAIL_DOMAIN", "")
 	if _, loadErr := Load(); loadErr == nil || !strings.Contains(loadErr.Error(), "PAYMAIL_DOMAIN") {
 		t.Fatalf("required without the registry: %v", loadErr)
+	}
+}
+
+// Live delivery is opt-in; its limits default to the TS "standard" profile and
+// take -1 for no limit, like the LIST_* bounds.
+func TestLoad_WebSockets(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	keys := []string{
+		"WEBSOCKET_MAX_CONNECTIONS", "WEBSOCKET_MAX_CONNECTIONS_PER_IDENTITY", "WEBSOCKET_MAX_ROOMS_PER_CONNECTION",
+		"WEBSOCKET_CONTROL_RATE_LIMIT", "WEBSOCKET_SEND_RATE_LIMIT", "WEBSOCKET_MAX_RECIPIENT_CONNECTIONS", "MAX_MESSAGE_BODY_BYTES",
+	}
+	values := func(c *Config) []int {
+		return []int{
+			c.WebSocketMaxConnections, c.WebSocketMaxConnectionsPerIdentity, c.WebSocketMaxRoomsPerConnection,
+			c.WebSocketControlRateLimit, c.WebSocketSendRateLimit, c.WebSocketMaxRecipientConnections, c.MaxMessageBodyBytes,
+		}
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EnableWebsockets {
+		t.Error("ENABLE_WEBSOCKETS must default to off")
+	}
+	for i, want := range []int{1_000, 25, 128, 600, 300, 25, 1 << 20} {
+		if got := values(cfg)[i]; got != want {
+			t.Errorf("%s default = %d, want %d", keys[i], got, want)
+		}
+	}
+
+	t.Setenv("ENABLE_WEBSOCKETS", "true")
+	for i, k := range keys {
+		t.Setenv(k, strconv.Itoa(i+1))
+	}
+	if cfg, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EnableWebsockets {
+		t.Error("ENABLE_WEBSOCKETS=true ignored")
+	}
+	for i, k := range keys {
+		if got := values(cfg)[i]; got != i+1 {
+			t.Errorf("%s = %d, want %d", k, got, i+1)
+		}
+	}
+
+	for _, k := range keys {
+		t.Setenv(k, "-1")
+	}
+	if cfg, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	for i, k := range keys {
+		if got := values(cfg)[i]; got != -1 {
+			t.Errorf("%s=-1 gave %d", k, got)
+		}
+	}
+
+	for _, k := range keys {
+		for _, v := range []string{"0", "-2", "abc", "1.5"} {
+			t.Setenv(k, v)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s=%q must be rejected", k, v)
+			}
+		}
+		t.Setenv(k, "")
 	}
 }

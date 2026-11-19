@@ -1,0 +1,17 @@
+# gitleaks ignore file
+#
+# Each line is a finding fingerprint (file:rule:startline, which matches in
+# any commit, or commit:file:rule:startline for one commit) that gitleaks
+# should treat as a known, intentional false positive.
+#
+# pkg/livesocket/testdata/ts-authmessages.json records BRC-103 frames from the
+# TypeScript SDK. The identityKey on lines 8, 18 and 102 is the public key of a
+# fixed test private key (0x11…11 or 0x22…22, see capture-authmessages.cjs),
+# which the generic-api-key rule mistakes for a credential. If the fixture is
+# regenerated and these lines move, refresh the fingerprints with:
+#   gitleaks dir pkg/livesocket/testdata --report-format json --report-path gl.json
+pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:8
+pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:18
+pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:102
+# The same keys in the fixture's first, single-line commit.
+6adc98cde76ca4e393d865e5b1053411d61079be:pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:1

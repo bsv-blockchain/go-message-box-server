@@ -29,6 +29,7 @@ import (
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
 	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/mongostore"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage/sqlstore"
@@ -138,6 +139,7 @@ func main() {
 	defer walletCleanup()
 
 	srv := handlers.NewServer(store, w)
+	srv.SetMaxMessageBodyBytes(cfg.MaxMessageBodyBytes)
 	srv.SetListMessagesConfig(handlers.ListMessagesConfig{
 		DefaultLimit:     cfg.ListDefaultLimit,
 		MaxLimit:         cfg.ListMaxLimit,
@@ -186,13 +188,17 @@ func main() {
 	// Auth middleware
 	authMiddleware := middleware.NewAuth(w)
 
-	// Payment middleware (returns 0 for now, matching the original)
+	// Payment middleware (returns 0 for now, matching the original). The socket
+	// sendMessage event bypasses this middleware: before pricing anything here,
+	// refuse that event as the TS server does (ERR_PAYMENT_REQUIRES_AUTHFETCH).
 	paymentMiddleware := middleware.NewPayment(w, middleware.WithRequestPriceCalculator(func(_ *http.Request) (int, error) {
 		return 0, nil
 	}))
 
 	// create root mux for swagger to avoid auth
 	rootMux := http.NewServeMux()
+	// Outside auth, for probes and orchestrators.
+	rootMux.Handle("GET /ready", readyHandler(store))
 	rootMux.Handle("GET /swagger/", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
 	))
@@ -223,8 +229,34 @@ func main() {
 	))
 
 	// Stack: CORS -> rootMux -> (public lookup | Auth -> Payment -> Routes)
-	handler := &corsHandler{
+	var handler http.Handler = &corsHandler{
 		next: rootMux,
+	}
+
+	// Live delivery. Socket.IO authenticates each connection itself with
+	// BRC-103 over the socket and answers CORS itself, so it is mounted ahead
+	// of both the HTTP auth middleware and corsHandler, whose wildcard headers
+	// would otherwise be sent twice.
+	closeLive := func() {}
+	if cfg.EnableWebsockets {
+		io := livesocket.NewServer(livesocket.Options{})
+		// Closed before server.Shutdown, which does not track upgraded
+		// connections and would otherwise wait out open long-polls.
+		closeLive = func() { io.Close(nil) }
+		srv.AttachWebSockets(io, livesocket.NewRegistry(livesocket.Limits{
+			MaxConnections:            cfg.WebSocketMaxConnections,
+			MaxConnectionsPerIdentity: cfg.WebSocketMaxConnectionsPerIdentity,
+			MaxRoomsPerConnection:     cfg.WebSocketMaxRoomsPerConnection,
+			ControlRatePerMinute:      cfg.WebSocketControlRateLimit,
+			SendRatePerMinute:         cfg.WebSocketSendRateLimit,
+			MaxRecipientConnections:   cfg.WebSocketMaxRecipientConnections,
+			AuthTimeout:               livesocket.DefaultAuthTimeout,
+		}))
+		top := http.NewServeMux()
+		top.Handle(livesocket.Path, io.ServeHandler(nil))
+		top.Handle("/", handler)
+		handler = top
+		logger.Log("live delivery enabled", "path", livesocket.Path)
 	}
 
 	server := &http.Server{
@@ -248,6 +280,7 @@ func main() {
 
 	logger.Log("shutting down...")
 	stopSweep()
+	closeLive()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
