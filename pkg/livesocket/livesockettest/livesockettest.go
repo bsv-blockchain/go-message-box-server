@@ -47,29 +47,40 @@ func NewClient(t testing.TB, url string) *client.Socket {
 	return c
 }
 
-// Connect starts c's connection and returns once the client has read the
-// server's engine.io handshake, redialing if the client misses it. It does
-// not wait for the server's socket.io CONNECT, so it also suits a socket the
-// server drops on connect; WaitConnected waits for that.
+// Connect opens c's connection and sends its socket.io CONNECT once,
+// redialing if the client misses the server's engine.io handshake. It does
+// not wait for the server's reply, so it also suits a socket the server
+// drops on connect; WaitConnected waits for that.
 //
-// zishang520's Manager.Open dials, which starts the WebSocket reader, and only
-// then subscribes to the engine's open event. An OPEN packet the reader
-// handles in between is dropped, so the client never sends its CONNECT and
-// the dial hangs. Once the Manager is open, the reader goroutine runs the rest
-// of the handshake in order, so later packets are not lost this way.
+// It works around two races in the zishang520 client, both of which happen
+// when the WebSocket reader goroutine handles the server's OPEN packet early:
+//
+//   - Manager.Open dials, which starts the reader, and only then subscribes
+//     to the engine's open event. An OPEN handled in between is dropped, the
+//     client never sends CONNECT, and the dial hangs.
+//   - Socket.Connect subscribes to the Manager's open event, opens the
+//     Manager, then sends CONNECT itself if the Manager is already open. If
+//     the reader opens it in between, CONNECT goes out twice, and the server
+//     closes the connection on the second ("invalid state").
+//
+// So Connect opens the Manager itself and waits for it, redialing if it
+// stays closed. Socket.Connect then finds it open and sends CONNECT once.
 func Connect(t testing.TB, c *client.Socket) {
 	t.Helper()
-	opened := make(chan struct{}, 1)
-	_ = c.Io().On("open", func(...any) {
-		select {
-		case opened <- struct{}{}:
-		default:
-		}
-	})
 	for dial := 1; ; dial++ {
-		c.Connect()
+		opened := make(chan error, 1)
+		c.Io().Open(func(err error) {
+			select {
+			case opened <- err:
+			default:
+			}
+		})
 		select {
-		case <-opened:
+		case err := <-opened:
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			c.Connect()
 			return
 		case <-time.After(openWait):
 		}
@@ -77,13 +88,9 @@ func Connect(t testing.TB, c *client.Socket) {
 			t.Fatalf("client missed the engine.io handshake on %d dials", dials)
 		}
 		t.Logf("dial %d missed the engine.io handshake; redialing", dial)
-		// A socket that never connected disconnects without a disconnect
-		// event. Closing the engine stops it from opening the Manager late.
+		// Closes the Manager, so a late OPEN cannot reach it. A socket that
+		// never connected emits no disconnect event.
 		c.Disconnect()
-		select {
-		case <-opened:
-		default:
-		}
 	}
 }
 
