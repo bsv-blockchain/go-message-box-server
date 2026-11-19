@@ -12,12 +12,11 @@ import (
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
-	engine "github.com/zishang520/socket.io/clients/engine/v3"
 	client "github.com/zishang520/socket.io/clients/socket/v3"
 	"github.com/zishang520/socket.io/servers/socket/v3"
-	"github.com/zishang520/socket.io/v3/pkg/types"
 
 	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket"
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket/livesockettest"
 )
 
 func newWallet(t *testing.T) (wallet.Interface, *ec.PublicKey) {
@@ -61,19 +60,13 @@ func newAuthServer(t *testing.T) (*httptest.Server, <-chan *livesocket.AuthSocke
 	return ts, accepted
 }
 
+// dial returns a connected WebSocket client. The server's polling is covered
+// by TestEchoOverPolling and by the TS probes.
 func dial(t *testing.T, url string) *client.Socket {
 	t.Helper()
-	opts := client.DefaultOptions()
-	opts.SetReconnection(false)
-	// WebSocket only: the zishang520 Go client's polling transport loses its
-	// connect or its first packets in roughly one dial in five. The server's
-	// polling is covered by TestEchoOverPolling and by the TS probes.
-	opts.SetTransports(types.NewSet[engine.TransportCtor](&engine.WebSocketBuilder{}))
-	c, err := client.Connect(url, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Disconnect() })
+	c := livesockettest.NewClient(t, url)
+	livesockettest.Connect(t, c)
+	livesockettest.WaitConnected(t, c)
 	return c
 }
 
@@ -142,21 +135,15 @@ func TestMalformedAuthMessageDisconnects(t *testing.T) {
 	ts, _ := newAuthServer(t)
 	c := dial(t, ts.URL)
 
-	connected, gone := make(chan struct{}), make(chan string, 1)
-	_ = c.On("connect", func(...any) { close(connected) })
+	gone := make(chan string, 1)
 	_ = c.On("disconnect", func(args ...any) {
 		select {
 		case gone <- fmt.Sprint(args[0]):
 		default:
 		}
 	})
-	select {
-	case <-connected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no connect")
-	}
-	// Emitted outside the connect listener: the zishang520 client does not
-	// flush an Emit made from inside it.
+	// Emitted after dial, not from a connect listener: the zishang520 client
+	// does not flush an Emit made from inside one.
 	if err := c.Emit(livesocket.AuthMessageEvent, map[string]any{"identityKey": "not-a-key"}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,11 +170,6 @@ func TestIdentityChangeDisconnects(t *testing.T) {
 		default:
 		}
 	})
-	for deadline := time.Now().Add(5 * time.Second); !c.Connected(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("no connect")
-		}
-	}
 
 	// Two Peers share the socket. Each sees the other's handshake replies,
 	// which it cannot match to a session of its own; those errors are expected.

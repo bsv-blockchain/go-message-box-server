@@ -8,10 +8,10 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
-	engine "github.com/zishang520/socket.io/clients/engine/v3"
 	client "github.com/zishang520/socket.io/clients/socket/v3"
 	"github.com/zishang520/socket.io/servers/socket/v3"
-	"github.com/zishang520/socket.io/v3/pkg/types"
+
+	"github.com/bsv-blockchain/go-message-box-server/pkg/livesocket/livesockettest"
 )
 
 // registerOne connects one client to a Registry with an hour-long auth
@@ -47,14 +47,8 @@ func registerOne(t *testing.T) (*Registry, *client.Socket, string, *entry) {
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	opts := client.DefaultOptions()
-	opts.SetReconnection(false)
-	opts.SetTransports(types.NewSet[engine.TransportCtor](&engine.WebSocketBuilder{}))
-	c, err := client.Connect(ts.URL, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Disconnect() })
+	c := livesockettest.NewClient(t, ts.URL)
+	livesockettest.Connect(t, c)
 	select {
 	case id := <-registered:
 		r.mu.Lock()
