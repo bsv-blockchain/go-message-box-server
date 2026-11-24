@@ -317,7 +317,10 @@ func TestP2PBeefRejected(t *testing.T) {
 	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_REJECTED")
-	assert.Contains(t, w.Body.String(), "script failed")
+	// The upstream text is the broadcaster's own wording, not ours to relay to
+	// an unauthenticated caller.
+	assert.NotContains(t, w.Body.String(), "script failed")
+	assert.Contains(t, w.Body.String(), "the network rejected the transaction")
 	assert.Empty(t, e.inbox(idKey))
 	stored, _ := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, e.now)
 	assert.Empty(t, stored.UsedTxID)

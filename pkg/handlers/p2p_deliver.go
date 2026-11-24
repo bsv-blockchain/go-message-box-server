@@ -115,7 +115,10 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 		}
 		if _, err := s.p2p.Broadcaster.Broadcast(ctx, tx); err != nil {
 			if errors.Is(err, p2p.ErrRejected) {
-				return "", http.StatusBadRequest, newP2PError("ERR_REJECTED", err.Error())
+				// The broadcaster's description stays in our log: relayed, it
+				// would let a public caller probe its validation internals.
+				logger.Warn("p2p broadcast rejected", "error", err)
+				return "", http.StatusBadRequest, newP2PError("ERR_REJECTED", "the network rejected the transaction")
 			}
 			logger.Error("p2p broadcast unavailable", "error", err)
 			return "", http.StatusServiceUnavailable, newP2PError("ERR_BROADCAST_UNAVAILABLE", "could not broadcast the transaction; safe to retry")
