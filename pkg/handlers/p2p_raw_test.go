@@ -248,3 +248,90 @@ func TestP2PRawTooManyInputs(t *testing.T) {
 	assert.Empty(t, parents.calls, "no parent is fetched past the cap")
 	assert.Empty(t, e.bc.seen)
 }
+
+// ctxParents records what the handler gave Parent to work within.
+type ctxParents struct {
+	hasDeadline bool
+	err         error
+}
+
+func (c *ctxParents) Parent(ctx context.Context, _ string) (*transaction.Transaction, error) {
+	_, c.hasDeadline = ctx.Deadline()
+	return nil, c.err
+}
+
+// rawWithInputs is the payment's child with extra inputs, each from a parent
+// txid of its own (distinct) or all from one (not distinct).
+func rawWithInputs(t *testing.T, pay payment, extra int, distinct bool) string {
+	t.Helper()
+	child, err := transaction.NewTransactionFromBytes(pay.child.Bytes())
+	require.NoError(t, err)
+	for i := 0; i < extra; i++ {
+		var h chainhash.Hash
+		h[0] = 0xee
+		if distinct {
+			h[1], h[2] = byte(i), byte(i>>8)
+		}
+		child.Inputs = append(child.Inputs, &transaction.TransactionInput{
+			SourceTXID: &h, SourceTxOutIndex: uint32(i), SequenceNumber: 0xffffffff, UnlockingScript: &script.Script{},
+		})
+	}
+	return child.Hex()
+}
+
+// The cap on distinct parents is what bounds the outside requests one
+// unauthenticated call can cause before any signature is checked.
+func TestP2PRawParentCapIsSmall(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	parents := newFakeParents(pay.parent)
+	e.srv.p2p.Parents = parents
+
+	// One real parent plus 10 more is 11 distinct: over the cap of 10.
+	w := e.post(rawPath, rawBody(rawWithInputs(t, pay, 10, true), d.ref, nil))
+	assert.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
+	assert.Empty(t, parents.calls)
+}
+
+// Many inputs from one parent cost one fetch but still make a large body to
+// parse and verify, so the input count is capped too.
+func TestP2PRawInputCap(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	parents := newFakeParents(pay.parent)
+	e.srv.p2p.Parents = parents
+
+	w := e.post(rawPath, rawBody(rawWithInputs(t, pay, 100, false), d.ref, nil))
+	assert.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
+	assert.Empty(t, parents.calls)
+}
+
+func TestP2PRawFetchHasDeadline(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	cp := &ctxParents{err: errors.New("woc down")}
+	e.srv.p2p.Parents = cp
+	e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	assert.True(t, cp.hasDeadline, "an unauthenticated call must not hold a fetch open without a time limit")
+}
+
+// A transaction whose ancestry outgrows the budget is the sender's problem, not
+// ours to retry.
+func TestP2PRawBudgetExceededIsClientError(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	e.srv.p2p.Parents = &ctxParents{err: p2p.ErrBudgetExceeded}
+	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	assert.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
+}

@@ -258,10 +258,20 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 // ancestry is a few hundred KB; this leaves room and still refuses abuse.
 const maxBeefBody = 4 << 20
 
-// maxRawParents bounds the distinct parents a raw transaction may spend. Each
-// one costs outside requests on the shared WhatsOnChain limiter, and the body
-// limit alone would allow thousands.
-const maxRawParents = 100
+// Bounds on what an unauthenticated raw transaction may cost before any
+// signature is checked. Each distinct parent costs at least one request on the
+// shared WhatsOnChain limiter and up to 4 MiB of response, and the body limit
+// alone would allow thousands of inputs. A payment spends a handful of outputs;
+// a sender with more should use the BEEF route, which carries its own proofs.
+const (
+	maxRawParents = 10  // distinct parent txids
+	maxRawInputs  = 100 // inputs in all, whatever their parents
+	// One call's whole outside spend: requests and bytes across every parent
+	// and every unmined ancestor, and the time they may take.
+	rawFetchRequests = 30
+	rawFetchBytes    = 8 << 20
+	rawFetchTimeout  = 30 * time.Second
+)
 
 // p2pMetadata is the optional paymail sender metadata. Only the note and the
 // sender's paymail are kept; the rest of the spec's fields are ignored.
@@ -418,6 +428,10 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "ERR_NO_MATCHING_OUTPUT", "no output pays the destination script and amount")
 		return
 	}
+	if len(tx.Inputs) > maxRawInputs {
+		writeError(w, http.StatusBadRequest, "ERR_TOO_MANY_INPUTS", "transaction has too many inputs")
+		return
+	}
 	distinct := map[string]struct{}{}
 	for _, in := range tx.Inputs {
 		distinct[in.SourceTXID.String()] = struct{}{}
@@ -426,6 +440,12 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "ERR_TOO_MANY_INPUTS", "transaction spends too many distinct parents")
 		return
 	}
+	// The fetches share one budget and one deadline: this is the unauthenticated
+	// part of the request, and it must not be able to hold WhatsOnChain or this
+	// connection for as long as it likes.
+	fctx, cancel := context.WithTimeout(r.Context(), rawFetchTimeout)
+	defer cancel()
+	fctx = p2p.WithBudget(fctx, p2p.NewBudget(rawFetchRequests, rawFetchBytes))
 	// One fetch per distinct parent, however many of its outputs are spent.
 	fetched := map[string]*transaction.Transaction{}
 	for _, in := range tx.Inputs {
@@ -433,7 +453,11 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		parent, ok := fetched[id]
 		if !ok {
 			var err error
-			if parent, err = s.p2p.Parents.Parent(r.Context(), id); err != nil {
+			if parent, err = s.p2p.Parents.Parent(fctx, id); err != nil {
+				if errors.Is(err, p2p.ErrBudgetExceeded) {
+					writeError(w, http.StatusBadRequest, "ERR_TOO_MANY_INPUTS", "the inputs' ancestry is too large to verify here; send BEEF instead")
+					return
+				}
 				if errors.Is(err, p2p.ErrParentNotFound) {
 					// The input does not exist, so a retry cannot help.
 					writeError(w, http.StatusBadRequest, "ERR_INVALID_TX", "an input transaction does not exist")
