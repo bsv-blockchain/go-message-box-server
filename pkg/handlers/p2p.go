@@ -33,10 +33,13 @@ const (
 type P2PConfig struct {
 	DestinationTTL time.Duration // accept window for an issued destination
 	MaxSatoshis    uint64
-	AvatarURL      string
-	Broadcaster    p2p.Broadcaster
-	Verifier       p2p.Verifier
-	Parents        p2p.ParentFetcher
+	// MaxLiveDestinations caps the unpaid destinations one handle may have open
+	// at once; 0 means defaultMaxLiveDestinations.
+	MaxLiveDestinations int
+	AvatarURL           string
+	Broadcaster         p2p.Broadcaster
+	Verifier            p2p.Verifier
+	Parents             p2p.ParentFetcher
 }
 
 // EnableP2P turns the paymail receive routes on. EnableLookup must also have
@@ -159,6 +162,12 @@ func (s *Server) PaymailPublicProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"name": rec.Handle, "avatar": s.p2p.AvatarURL})
 }
 
+// defaultMaxLiveDestinations is the open (unpaid, unexpired) destinations one
+// handle may hold. Issuing needs no authentication, so without a cap a caller
+// could write rows without bound; a wallet pays one at a time, and a sender
+// retrying a lost response reuses its reference.
+const defaultMaxLiveDestinations = 100
+
 // maxDestinationBody bounds the destination request. The only field is the
 // amount, so anything larger is not a paymail sender.
 const maxDestinationBody = 4 << 10
@@ -195,6 +204,7 @@ func parseSatoshis(raw json.RawMessage, max uint64) (uint64, bool) {
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 413 {object} ErrorResponse
+// @Failure 429 {object} ErrorResponse
 // @Router /api/bsvalias/p2p-payment-destination/{paymail} [post]
 func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 	rec, status, err := s.activeHandleFor(r.Context(), r.PathValue("paymail"))
@@ -220,6 +230,20 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_SATOSHIS", "satoshis must be a positive integer within the limit")
 		return
 	}
+	limit := s.p2p.MaxLiveDestinations
+	if limit <= 0 {
+		limit = defaultMaxLiveDestinations
+	}
+	live, err := s.destinations.CountLiveDestinations(r.Context(), rec.Handle, s.clock())
+	if err != nil {
+		logger.Error("p2p destination count failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "storage failure; safe to retry")
+		return
+	}
+	if live >= limit {
+		writeError(w, http.StatusTooManyRequests, "ERR_TOO_MANY_DESTINATIONS", "too many open payment requests for this handle; retry later")
+		return
+	}
 	// activeHandleFor only returns active records, which carry a key. Copy it
 	// now: the stored destination keeps this key even if the handle is released.
 	identityKey := *rec.IdentityKey
@@ -242,7 +266,9 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 		Script: d.Script, Satoshis: sats,
 		DerivationPrefix: d.Prefix, DerivationSuffix: d.Suffix,
 		CreatedAt: now, AcceptUntil: now.Add(s.p2p.DestinationTTL),
-		PurgeAt: now.Add(storage.P2PDestinationRetention),
+		// Unpaid, it is gone soon after the window; MarkDestinationUsed moves
+		// this out to the retention period once a payment lands.
+		PurgeAt: now.Add(s.p2p.DestinationTTL + storage.P2PUnusedGrace),
 	}); err != nil {
 		logger.Error("p2p destination store failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "storage failure; safe to retry")

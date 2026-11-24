@@ -207,4 +207,35 @@ func RunP2PDestinationTests(t *testing.T, newStore NewP2PDestinationStoreFunc) {
 			t.Fatalf("err = %v, want ErrDestinationNotFound", err)
 		}
 	})
+
+	t.Run("CountLive", func(t *testing.T) {
+		s := newStore(t)
+		mk := func(ref, handle string, until time.Time) storage.P2PDestination {
+			d := p2pDest(ref)
+			d.Handle, d.AcceptUntil = handle, until
+			return d
+		}
+		now := p2pT0.Add(time.Hour)
+		for _, d := range []storage.P2PDestination{
+			mk("r1", "deggen", now.Add(time.Hour)),   // live
+			mk("r2", "deggen", now.Add(time.Minute)), // live
+			mk("r3", "deggen", now.Add(-time.Hour)),  // window closed
+			mk("r4", "deggen", now.Add(time.Hour)),   // paid, below
+			mk("r5", "other", now.Add(time.Hour)),    // another handle
+		} {
+			if err := s.CreateDestination(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.MarkDestinationUsed(ctx, "r4", tx1, now); err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.CountLiveDestinations(ctx, "deggen", now)
+		if err != nil || n != 2 {
+			t.Fatalf("CountLiveDestinations = %d, %v; want 2 (unpaid, window open, this handle)", n, err)
+		}
+		if n, err = s.CountLiveDestinations(ctx, "nobody", now); err != nil || n != 0 {
+			t.Fatalf("unknown handle = %d, %v; want 0", n, err)
+		}
+	})
 }

@@ -148,6 +148,8 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			// Records expire on their own purgeAt, which is pushed out on
 			// delivery; expireAfterSeconds 0 means "at that time".
 			{Keys: bson.D{{Key: "purgeAt", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
+			// The per-handle count of open destinations taken on every issue.
+			{Keys: bson.D{{Key: "handle", Value: 1}, {Key: "usedTxId", Value: 1}, {Key: "acceptUntil", Value: 1}}},
 		},
 		subscriptionsColl: {
 			// The handle's subscriptions, read on every lapse and claim.

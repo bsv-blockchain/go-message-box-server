@@ -97,6 +97,14 @@ func (s *Store) MarkDestinationUsed(ctx context.Context, reference, txid string,
 	return storage.ErrDestinationUsed
 }
 
+// CountLiveDestinations implements storage.P2PDestinationStore.
+func (s *Store) CountLiveDestinations(ctx context.Context, handle string, now time.Time) (int, error) {
+	n, err := s.db.Collection(p2pDestinationsColl).CountDocuments(ctx, bson.M{
+		"handle": handle, "usedTxId": "", "acceptUntil": bson.M{"$gt": msUTC(now)},
+	})
+	return int(n), err
+}
+
 // MarkDestinationDelivered implements storage.P2PDestinationStore.
 func (s *Store) MarkDestinationDelivered(ctx context.Context, reference, txid string) error {
 	res, err := s.db.Collection(p2pDestinationsColl).UpdateOne(ctx,
