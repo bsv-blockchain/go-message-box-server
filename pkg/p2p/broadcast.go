@@ -41,6 +41,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/broadcaster"
 	"github.com/bsv-blockchain/go-sdk/util"
+
+	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 )
 
 // ErrRejected means the network refused the transaction (a 4xx, a double
@@ -77,13 +79,24 @@ func (a *arcade) Broadcast(ctx context.Context, tx *transaction.Transaction) (st
 	return "", fmt.Errorf("broadcast failed (%s): %s", fail.Code, fail.Description)
 }
 
-// isFinalFailure is true for an HTTP 4xx and for the txStatus values ARC
-// answers with HTTP 200 for a transaction the network refused. It is false for
-// 5xx, transport errors and a response we cannot read (ERR_INVALID_RESPONSE,
-// ERR_TXID_MISMATCH), which say nothing about the transaction.
+// isFinalFailure is true for the HTTP codes that are a verdict on the
+// transaction (400, 409, 422 and ARC's 460-469 transaction errors) and for the
+// txStatus values ARC answers with HTTP 200 for a transaction the network
+// refused. It is false for every other code, which is ours or transient: 401
+// and 403 (our API key), 404, 408, 425 and 429 (quota or timing), 5xx,
+// transport errors, and a response we cannot read (ERR_INVALID_RESPONSE,
+// ERR_TXID_MISMATCH). Calling those a rejection would tell a sender with a
+// good transaction that it is dead.
 func isFinalFailure(code string) bool {
 	if n, err := strconv.Atoi(code); err == nil {
-		return n >= 400 && n < 500
+		switch {
+		case n == 400, n == 409, n == 422, n >= 460 && n <= 469:
+			return true
+		case n == 401, n == 403:
+			// Our configuration, and an operator has to see it.
+			logger.Error("p2p broadcaster refused our credentials", "status", n)
+		}
+		return false
 	}
 	switch code {
 	case "REJECTED", "DOUBLE_SPEND_ATTEMPTED", "INVALID", "MALFORMED", "MINED_IN_STALE_BLOCK":

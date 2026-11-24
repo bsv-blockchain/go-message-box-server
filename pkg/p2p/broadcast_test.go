@@ -131,3 +131,25 @@ func TestArcadeRequestShape(t *testing.T) {
 	require.Equal(t, "/tx", without.URL.Path)
 	require.Empty(t, without.Header.Values("Authorization"))
 }
+
+// Only a verdict on the transaction is final. A 4xx that says our key, our
+// quota or our timing is wrong says nothing about the transaction, so the
+// sender must be told to retry (a 5xx), not that the payment is dead.
+func TestArcadeOurTroubleIsNotRejection(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 408, 425, 429} {
+		srv := arcadeFake(t, status, `{"detail":"nope"}`, nil)
+		_, err := NewArcade(srv.URL, "", srv.Client()).Broadcast(context.Background(), minedTx(t))
+		srv.Close()
+		require.Error(t, err, status)
+		require.NotErrorIs(t, err, ErrRejected, "status %d", status)
+	}
+}
+
+func TestArcadeTerminalVerdictsAreRejection(t *testing.T) {
+	for _, status := range []int{400, 409, 422, 460, 461, 463, 469} {
+		srv := arcadeFake(t, status, `{"detail":"bad tx"}`, nil)
+		_, err := NewArcade(srv.URL, "", srv.Client()).Broadcast(context.Background(), minedTx(t))
+		srv.Close()
+		require.ErrorIs(t, err, ErrRejected, "status %d", status)
+	}
+}
