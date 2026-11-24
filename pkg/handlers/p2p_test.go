@@ -191,7 +191,7 @@ func TestP2PDestination(t *testing.T) {
 	assert.Equal(t, idKey, stored.IdentityKey)
 	assert.EqualValues(t, 1000, stored.Satoshis)
 	assert.Equal(t, e.now.Add(24*time.Hour), stored.AcceptUntil)
-	assert.Equal(t, stored.AcceptUntil.Add(storage.P2PUnusedGrace), stored.PurgeAt)
+	assert.Equal(t, stored.CreatedAt.Add(storage.P2PUnpaidRetention), stored.PurgeAt)
 	assert.Empty(t, stored.UsedTxID)
 }
 
@@ -234,37 +234,15 @@ func TestP2PDestinationsDiffer(t *testing.T) {
 	assert.NotEqual(t, a.Outputs[0].Script, b.Outputs[0].Script)
 }
 
-// A destination nobody pays must not sit in Mongo for the 30 days kept for a
-// payment's replay window: it goes soon after its accept window closes.
-func TestP2PDestinationUnusedPurgedAfterAcceptWindow(t *testing.T) {
+// An unpaid destination is kept 7 days from issue, well past its accept
+// window: a sender may broadcast a payment itself after an error from us, and
+// the record is the only copy of the derivation the recipient needs to spend it.
+func TestP2PDestinationUnpaidKeptSevenDays(t *testing.T) {
 	e := newP2PEnv(t, true)
 	e.register("rosa")
 	d := e.issue("rosa", 1000)
 	stored, err := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, e.now)
 	require.NoError(t, err)
-	assert.False(t, stored.PurgeAt.Before(stored.AcceptUntil), "purge must not precede the window, or a late payment loses its record")
-	assert.LessOrEqual(t, stored.PurgeAt.Sub(stored.AcceptUntil), time.Hour)
-}
-
-// Issuing is unauthenticated, so each handle holds a bounded number of open
-// destinations, and one handle's flood does not close another's.
-func TestP2PDestinationCapPerHandle(t *testing.T) {
-	e := newP2PEnv(t, true)
-	e.srv.p2p.MaxLiveDestinations = 3
-	rosaKey := e.register("rosa")
-	e.register("bob")
-	_ = rosaKey
-	var refs []string
-	for range 3 {
-		refs = append(refs, e.issue("rosa", 1000).ref)
-	}
-	w := e.post("/api/bsvalias/p2p-payment-destination/rosa@example.com", `{"satoshis":1000}`)
-	assert.Equal(t, 429, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_DESTINATIONS")
-
-	e.issue("bob", 1000) // another handle is unaffected
-
-	// A paid destination is no longer open, so it frees a slot.
-	require.NoError(t, e.srv.Store.(*fakeStore).MarkDestinationUsed(t.Context(), refs[0], strings.Repeat("a", 64), e.now))
-	e.issue("rosa", 1000)
+	assert.Equal(t, 7*24*time.Hour, stored.PurgeAt.Sub(stored.CreatedAt))
+	assert.True(t, stored.PurgeAt.After(stored.AcceptUntil.Add(24*time.Hour)), "record must outlive the accept window by days")
 }

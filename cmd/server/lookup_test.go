@@ -234,10 +234,6 @@ func (emptyDestinations) MarkDestinationUsed(context.Context, string, string, ti
 	return nil
 }
 
-func (emptyDestinations) CountLiveDestinations(context.Context, string, time.Time) (int, error) {
-	return 0, nil
-}
-
 func (emptyDestinations) MarkDestinationDelivered(context.Context, string, string) error {
 	return nil
 }

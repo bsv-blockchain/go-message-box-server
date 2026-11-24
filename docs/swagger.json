@@ -880,12 +880,6 @@
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
-                    },
-                    "429": {
-                        "description": "Too Many Requests",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
                     }
                 },
                 "summary": "Paymail P2P payment destination (capability 2a40af698840)",

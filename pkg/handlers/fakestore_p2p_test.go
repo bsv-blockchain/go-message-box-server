@@ -38,18 +38,6 @@ func (f *fakeStore) GetDestination(_ context.Context, reference string, now time
 	return &c, nil
 }
 
-func (f *fakeStore) CountLiveDestinations(_ context.Context, handle string, now time.Time) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n := 0
-	for _, d := range f.p2p {
-		if d.Handle == handle && d.UsedTxID == "" && d.AcceptUntil.After(now) {
-			n++
-		}
-	}
-	return n, nil
-}
-
 func (f *fakeStore) MarkDestinationDelivered(_ context.Context, reference, txid string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
