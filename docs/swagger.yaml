@@ -531,6 +531,179 @@ paths:
       summary: Operator release of a handle (lost keys)
       tags:
         - lookup
+  /api/bsvalias/beef/{paymail}:
+    post:
+      consumes:
+        - application/json
+      parameters:
+        - description: alias@domain
+          in: path
+          name: paymail
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Paymail BEEF receive (capability 5c55a7fdb7bb)
+      tags:
+        - paymail
+  /api/bsvalias/id/{paymail}:
+    get:
+      parameters:
+        - description: alias@domain
+          in: path
+          name: paymail
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Paymail PKI (capability pki)
+      tags:
+        - paymail
+  /api/bsvalias/p2p-payment-destination/{paymail}:
+    post:
+      consumes:
+        - application/json
+      parameters:
+        - description: alias@domain
+          in: path
+          name: paymail
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Paymail P2P payment destination (capability 2a40af698840)
+      tags:
+        - paymail
+  /api/bsvalias/public-profile/{paymail}:
+    get:
+      parameters:
+        - description: alias@domain
+          in: path
+          name: paymail
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Paymail public profile (capability f12f968c92d6)
+      tags:
+        - paymail
+  /api/bsvalias/receive-transaction/{paymail}:
+    post:
+      consumes:
+        - application/json
+      parameters:
+        - description: alias@domain
+          in: path
+          name: paymail
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Paymail raw transaction receive (capability 5f1323cddf31)
+      tags:
+        - paymail
   /api/handle:
     put:
       consumes:

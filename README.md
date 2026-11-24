@@ -403,6 +403,24 @@ Normative for anyone implementing a resolver:
 3. Search results are suggestions. Show full `fields.paymail`; user selects. Never auto-select `result[0]`. If the user entered a complete `handle@domain`, require `fields.paymail` to equal it exactly.
 4. Reverse lookup: additionally require `subject ==` queried key; optionally forward-resolve `fields.paymail` and compare.
 
+
+#### Paymail P2P receive
+
+An optional receive rail that lets a legacy paymail wallet (HandCash and others) pay `handle@domain`. It serves the P2P payment destination, BEEF and raw-transaction capabilities, checks each payment with SPV, broadcasts it through an Arcade server, and writes it into the recipient's `payment_inbox` as a PeerPay message. It is on only when `PAYMAIL_DOMAIN` is set, `P2P_RECEIVE_ENABLED=true` and `BROADCASTER_URL` is set. With any of them missing, `/.well-known/bsvalias` is exactly what it was before.
+
+| Env                    | Meaning                                                                                                                         | Default |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------------|---------|
+| `P2P_RECEIVE_ENABLED`  | `true` turns the rail on. Needs `PAYMAIL_DOMAIN` and `BROADCASTER_URL`, or the server refuses to start                          | `false` |
+| `BROADCASTER_URL`      | Arcade base URL, no trailing slash. `https`, or `http` for localhost only                                                       | unset   |
+| `BROADCASTER_API_KEY`  | Bearer key for the broadcaster, if it needs one                                                                                 | unset   |
+| `WOC_API_KEY`          | WhatsOnChain API key, used for SPV chain tracking and for fetching parents of raw transactions                                 | unset   |
+| `PAYMAIL_AVATAR_URL`   | Avatar URL returned by the public profile capability                                                                            | empty   |
+| `P2P_DESTINATION_TTL`  | How long a payment destination accepts a first payment, e.g. `24h`. Records are kept 30 days regardless, so a retry still works | `24h`   |
+| `P2P_MAX_SATOSHIS`     | Largest amount a destination may be issued for                                                                                  | `1000000000` |
+| `P2P_RATE_PER_MIN`     | Per-IP cap on the P2P routes. They have their own bucket, so lookup traffic cannot starve a payment (one payment makes 3 to 4 calls). Same proxy settings as `LOOKUP_RATE_PER_MIN` | `120`   |
+
+Routes, all under `/api/bsvalias/` and all public: `GET id/{alias}@{domain}`, `GET public-profile/{alias}@{domain}`, `POST p2p-payment-destination/{alias}@{domain}`, `POST beef/{alias}@{domain}` and `POST receive-transaction/{alias}@{domain}`. The rail needs `STORAGE_BACKEND=mongo`.
+
 </details>
 
 <details>

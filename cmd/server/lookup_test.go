@@ -217,3 +217,152 @@ func (emptySubscriptions) ListSubscriptionsByHandle(context.Context, string) ([]
 func (emptySubscriptions) ListLapsedSubscriptions(context.Context, time.Time, int) ([]mbstorage.Subscription, error) {
 	return []mbstorage.Subscription{}, nil
 }
+
+// emptyDestinations is a destination store that issues anything and finds
+// nothing. The wiring under test never reads a row back.
+type emptyDestinations struct{}
+
+func (emptyDestinations) CreateDestination(context.Context, mbstorage.P2PDestination) error {
+	return nil
+}
+
+func (emptyDestinations) GetDestination(context.Context, string, time.Time) (*mbstorage.P2PDestination, error) {
+	return nil, mbstorage.ErrDestinationNotFound
+}
+
+func (emptyDestinations) MarkDestinationUsed(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+// p2pTestConfig is a lookup config with the receive rail switched on. The
+// handle registry holds one handle, rosa, so the routes have something to
+// resolve.
+func p2pTestConfig() *config.Config {
+	cfg := lookupConfig("example.com", "mongo")
+	cfg.P2PReceiveEnabled = true
+	cfg.BroadcasterURL = "https://arcade.example.com"
+	cfg.P2PRatePerMin = 120
+	cfg.P2PDestinationTTL = time.Hour
+	cfg.P2PMaxSatoshis = 1_000_000
+	return cfg
+}
+
+type rosaRegistry struct{ emptyRegistry }
+
+func (rosaRegistry) GetHandle(_ context.Context, h string) (*mbstorage.HandleRecord, error) {
+	if h != "rosa" {
+		return nil, nil //nolint:nilnil // HandleStore contract: no record is (nil, nil)
+	}
+	key := "02" + strings.Repeat("ab", 32)
+	return &mbstorage.HandleRecord{Handle: "rosa", IdentityKey: &key}, nil
+}
+
+// mountP2PRoot builds the root mux the way main does, so the test sees the
+// routes a deployment would serve.
+func mountP2PRoot(t *testing.T, cfg *config.Config) *http.ServeMux {
+	t.Helper()
+	srv := handlers.NewServer(nil, nil)
+	public := mountLookup(cfg, srv, rosaRegistry{})
+	p2pHandler := mountP2P(cfg, srv, &p2pWiring{Store: emptyDestinations{}})
+	root := http.NewServeMux()
+	mountPublicRoutes(root, public, p2pHandler, nil)
+	return root
+}
+
+func serve(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body)))
+	return w
+}
+
+func TestMountP2P_ServesTheRoutesThroughTheRootMux(t *testing.T) {
+	root := mountP2PRoot(t, p2pTestConfig())
+	if w := serve(t, root, "GET", "/api/bsvalias/id/rosa@example.com", ""); w.Code != http.StatusOK {
+		t.Errorf("GET pki = %d, want 200", w.Code)
+	}
+	if w := serve(t, root, "GET", "/api/bsvalias/public-profile/rosa@example.com", ""); w.Code != http.StatusOK {
+		t.Errorf("GET public-profile = %d, want 200", w.Code)
+	}
+	if w := serve(t, root, "POST", "/api/bsvalias/p2p-payment-destination/rosa@example.com", `{"satoshis":1000}`); w.Code != http.StatusOK {
+		t.Errorf("POST destination = %d, want 200", w.Code)
+	}
+	// The two receive routes are mounted: a bad body is the route's own 400,
+	// not the mux's 404 or 405.
+	for _, p := range []string{"beef", "receive-transaction"} {
+		if w := serve(t, root, "POST", "/api/bsvalias/"+p+"/rosa@example.com", `not json`); w.Code != http.StatusBadRequest {
+			t.Errorf("POST %s = %d, want 400", p, w.Code)
+		}
+	}
+	// The capability document names them.
+	var doc struct {
+		Capabilities map[string]any `json:"capabilities"`
+	}
+	if err := json.Unmarshal(serve(t, root, "GET", "/.well-known/bsvalias", "").Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Capabilities["2a40af698840"] == nil {
+		t.Errorf("capabilities = %v, want the p2p destination", doc.Capabilities)
+	}
+}
+
+func TestMountP2P_OffServesNothing(t *testing.T) {
+	cfg := p2pTestConfig()
+	cfg.P2PReceiveEnabled = false
+	if h := mountP2P(cfg, handlers.NewServer(nil, nil), &p2pWiring{Store: emptyDestinations{}}); h != nil {
+		t.Error("mountP2P returned a handler with P2P_RECEIVE_ENABLED unset")
+	}
+	root := mountP2PRoot(t, cfg)
+	if w := serve(t, root, "GET", "/api/bsvalias/id/rosa@example.com", ""); w.Code != http.StatusNotFound {
+		t.Errorf("GET pki with the rail off = %d, want 404", w.Code)
+	}
+	// The well-known document is what it was before the rail existed.
+	var doc struct {
+		Capabilities map[string]any `json:"capabilities"`
+	}
+	if err := json.Unmarshal(serve(t, root, "GET", "/.well-known/bsvalias", "").Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Capabilities) != 2 {
+		t.Errorf("capabilities = %v, want only the two lookup ones", doc.Capabilities)
+	}
+}
+
+// Traefik hides client addresses, so every public caller shares one bucket per
+// limiter. A payment needs several P2P calls; lookup traffic must not eat them.
+func TestMountP2P_OwnRateBucket(t *testing.T) {
+	cfg := p2pTestConfig()
+	cfg.LookupRatePerMin = 1
+	root := mountP2PRoot(t, cfg)
+
+	serve(t, root, "GET", "/.well-known/bsvalias", "")
+	if w := serve(t, root, "GET", "/.well-known/bsvalias", ""); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("lookup bucket not exhausted: %d", w.Code)
+	}
+	if w := serve(t, root, "POST", "/api/bsvalias/p2p-payment-destination/rosa@example.com", `{"satoshis":1000}`); w.Code != http.StatusOK {
+		t.Errorf("destination after lookup exhaustion = %d, want 200", w.Code)
+	}
+
+	// And the P2P bucket does limit.
+	cfg.P2PRatePerMin = 1
+	root = mountP2PRoot(t, cfg)
+	serve(t, root, "GET", "/api/bsvalias/id/rosa@example.com", "")
+	if w := serve(t, root, "GET", "/api/bsvalias/id/rosa@example.com", ""); w.Code != http.StatusTooManyRequests {
+		t.Errorf("second p2p call = %d, want 429", w.Code)
+	}
+}
+
+func TestP2PWiring(t *testing.T) {
+	cfg := p2pTestConfig()
+	got, err := newP2PWiring(lookupConfig("example.com", "mongo"), noRegistry{})
+	if got != nil || err != nil {
+		t.Errorf("rail off = %v, %v; want nil, nil", got, err)
+	}
+	if _, err = newP2PWiring(cfg, noRegistry{}); err == nil {
+		t.Error("a backend without a destination store must be refused")
+	}
+	got, err = newP2PWiring(cfg, emptyDestinations{})
+	if err != nil || got == nil || got.Broadcaster == nil || got.Verifier == nil || got.Parents == nil {
+		t.Errorf("wiring = %+v, %v; want every part set", got, err)
+	}
+}

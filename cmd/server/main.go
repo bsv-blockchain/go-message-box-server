@@ -165,6 +165,12 @@ func main() {
 	mux.HandleFunc("GET "+prefix+"/permissions/quote", srv.GetQuote)
 
 	public := mountLookup(cfg, srv, registry)
+	p2pWire, err := newP2PWiring(cfg, store)
+	if err != nil {
+		slog.Error("cannot enable paymail p2p receive", "error", err)
+		os.Exit(1)
+	}
+	p2pHandler := mountP2P(cfg, srv, p2pWire)
 	if public != nil {
 		mux.HandleFunc("POST "+prefix+"/admin/handle/release", srv.AdminReleaseHandle)
 	}
@@ -206,14 +212,11 @@ func main() {
 	// Paymail profile lookup: public by design, so outside auth and payment.
 	// ServeMux picks the most specific pattern regardless of registration
 	// order, so these win over the catch-all below.
+	mountPublicRoutes(rootMux, public, p2pHandler, storeRoutes)
+	if p2pHandler != nil {
+		slog.Info("paymail p2p receive enabled", "broadcaster", cfg.BroadcasterURL)
+	}
 	if public != nil {
-		rootMux.Handle("/.well-known/bsvalias", public)
-		rootMux.Handle("/api/handle", public)
-		rootMux.Handle("/api/handle/", public)
-		rootMux.Handle("/api/identityKey/", public)
-		if storeRoutes != nil {
-			rootMux.Handle("/api/store/", storeRoutes)
-		}
 		slog.Info("paymail profile lookup enabled", "domain", cfg.PaymailDomain)
 		// The capability document hands PAYMAIL_HOST to clients as the base of
 		// every lookup URL. A client that resolved this server through a
