@@ -56,6 +56,7 @@ func (s *Server) P2PRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/bsvalias/public-profile/{paymail}", s.PaymailPublicProfile)
 	mux.HandleFunc("POST /api/bsvalias/p2p-payment-destination/{paymail}", s.PaymailP2PDestination)
 	mux.HandleFunc("POST /api/bsvalias/beef/{paymail}", s.PaymailBEEF)
+	mux.HandleFunc("POST /api/bsvalias/receive-transaction/{paymail}", s.PaymailReceiveTransaction)
 	return mux
 }
 
@@ -312,6 +313,21 @@ func writeSettleError(w http.ResponseWriter, status int, err error) {
 	writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "internal error; safe to retry")
 }
 
+// decodeReceiveBody reads a receive route's JSON body within maxBeefBody,
+// writing the error response itself when it cannot.
+func decodeReceiveBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBeefBody)).Decode(v); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "request body too large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_BODY", "body must be JSON")
+		return false
+	}
+	return true
+}
+
 // PaymailBEEF receives a payment as BEEF (capability 5c55a7fdb7bb).
 // @Summary Paymail BEEF receive (capability 5c55a7fdb7bb)
 // @Tags paymail
@@ -331,13 +347,7 @@ func (s *Server) PaymailBEEF(w http.ResponseWriter, r *http.Request) {
 		Reference string      `json:"reference"`
 		Metadata  p2pMetadata `json:"metadata"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBeefBody)).Decode(&body); err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "request body too large")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "ERR_INVALID_BODY", "body must be JSON")
+	if !decodeReceiveBody(w, r, &body) {
 		return
 	}
 	dest := s.destinationFor(w, r, r.PathValue("paymail"), body.Reference)
@@ -358,6 +368,68 @@ func (s *Server) PaymailBEEF(w http.ResponseWriter, r *http.Request) {
 	if perr != nil {
 		writeError(w, http.StatusBadRequest, perr.code, perr.Error())
 		return
+	}
+	txid, status, err := s.settleP2P(r.Context(), dest, tx, body.Metadata)
+	if err != nil {
+		writeSettleError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"txid": txid, "note": ""})
+}
+
+// PaymailReceiveTransaction receives a payment as a raw transaction
+// (capability 5f1323cddf31). The sender gives no proofs, so the parents are
+// fetched here, which lets settleP2P verify and package the payment.
+// @Summary Paymail raw transaction receive (capability 5f1323cddf31)
+// @Tags paymail
+// @Accept json
+// @Produce json
+// @Param paymail path string true "alias@domain"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 413 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Router /api/bsvalias/receive-transaction/{paymail} [post]
+func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Hex       string      `json:"hex"`
+		Reference string      `json:"reference"`
+		Metadata  p2pMetadata `json:"metadata"`
+	}
+	if !decodeReceiveBody(w, r, &body) {
+		return
+	}
+	dest := s.destinationFor(w, r, r.PathValue("paymail"), body.Reference)
+	if dest == nil {
+		return
+	}
+	tx, err := transaction.NewTransactionFromHex(body.Hex)
+	if err != nil || len(tx.Inputs) == 0 || len(tx.Outputs) == 0 {
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_TX", "hex must be a raw transaction")
+		return
+	}
+	// Check the destination before spending any outside request on parents.
+	if matchOutput(tx, dest) < 0 {
+		writeError(w, http.StatusBadRequest, "ERR_NO_MATCHING_OUTPUT", "no output pays the destination script and amount")
+		return
+	}
+	// One fetch per distinct parent, however many of its outputs are spent.
+	fetched := map[string]*transaction.Transaction{}
+	for _, in := range tx.Inputs {
+		id := in.SourceTXID.String()
+		parent, ok := fetched[id]
+		if !ok {
+			var err error
+			if parent, err = s.p2p.Parents.Parent(r.Context(), id); err != nil {
+				logger.Error("p2p parent fetch failed", "parent", id, "error", err)
+				writeError(w, http.StatusServiceUnavailable, "ERR_PARENT_UNAVAILABLE", "could not fetch an input transaction; safe to retry")
+				return
+			}
+			fetched[id] = parent
+		}
+		in.SourceTransaction = parent
 	}
 	txid, status, err := s.settleP2P(r.Context(), dest, tx, body.Metadata)
 	if err != nil {
