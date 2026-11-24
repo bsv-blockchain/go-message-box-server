@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsv-blockchain/go-sdk/transaction"
+
 	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/handles"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/p2p"
@@ -53,6 +55,7 @@ func (s *Server) P2PRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/bsvalias/id/{paymail}", s.PaymailPKI)
 	mux.HandleFunc("GET /api/bsvalias/public-profile/{paymail}", s.PaymailPublicProfile)
 	mux.HandleFunc("POST /api/bsvalias/p2p-payment-destination/{paymail}", s.PaymailP2PDestination)
+	mux.HandleFunc("POST /api/bsvalias/beef/{paymail}", s.PaymailBEEF)
 	return mux
 }
 
@@ -248,4 +251,118 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 		"outputs":   []map[string]any{{"script": d.Script, "satoshis": sats}},
 		"reference": reference,
 	})
+}
+
+// maxBeefBody bounds a BEEF submission. A payment with a deep unconfirmed
+// ancestry is a few hundred KB; this leaves room and still refuses abuse.
+const maxBeefBody = 4 << 20
+
+// p2pMetadata is the optional paymail sender metadata. Only the note and the
+// sender's paymail are kept; the rest of the spec's fields are ignored.
+type p2pMetadata struct {
+	Note   string `json:"note"`
+	Sender string `json:"sender"`
+}
+
+// aliasFor returns the handle part of a paymail address on this server's
+// domain. Unlike activeHandleFor it does not look the handle up: a payment is
+// bound to the destination's stored identity key, so a handle released since
+// the destination was issued must not stop the payment.
+func (s *Server) aliasFor(paymail string) (string, bool) {
+	paymail = strings.ToLower(strings.TrimSpace(paymail))
+	i := strings.LastIndex(paymail, "@")
+	if i < 0 || paymail[i+1:] != s.lookup.Domain {
+		return "", false
+	}
+	return paymail[:i], true
+}
+
+// destinationFor loads and checks the destination a payment refers to, writing
+// the error response itself when it cannot.
+func (s *Server) destinationFor(w http.ResponseWriter, r *http.Request, paymail, reference string) *storage.P2PDestination {
+	alias, ok := s.aliasFor(paymail)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_PAYMAIL", "expected alias@"+s.lookup.Domain)
+		return nil
+	}
+	dest, err := s.destinations.GetDestination(r.Context(), reference, s.clock())
+	if errors.Is(err, storage.ErrDestinationNotFound) {
+		writeError(w, http.StatusNotFound, "ERR_UNKNOWN_REFERENCE", "unknown or expired reference")
+		return nil
+	}
+	if err != nil {
+		logger.Error("p2p destination lookup failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "storage failure; safe to retry")
+		return nil
+	}
+	if dest.Handle != alias {
+		writeError(w, http.StatusBadRequest, "ERR_REFERENCE_MISMATCH", "reference was issued for another handle")
+		return nil
+	}
+	return dest
+}
+
+// writeSettleError answers with what settleP2P decided.
+func writeSettleError(w http.ResponseWriter, status int, err error) {
+	var pe *p2pError
+	if errors.As(err, &pe) {
+		writeError(w, status, pe.code, pe.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "internal error; safe to retry")
+}
+
+// PaymailBEEF receives a payment as BEEF (capability 5c55a7fdb7bb).
+// @Summary Paymail BEEF receive (capability 5c55a7fdb7bb)
+// @Tags paymail
+// @Accept json
+// @Produce json
+// @Param paymail path string true "alias@domain"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 413 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Router /api/bsvalias/beef/{paymail} [post]
+func (s *Server) PaymailBEEF(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Beef      string      `json:"beef"`
+		Reference string      `json:"reference"`
+		Metadata  p2pMetadata `json:"metadata"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBeefBody)).Decode(&body); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_BODY", "body must be JSON")
+		return
+	}
+	dest := s.destinationFor(w, r, r.PathValue("paymail"), body.Reference)
+	if dest == nil {
+		return
+	}
+	raw, err := hex.DecodeString(body.Beef)
+	if err != nil || len(raw) == 0 {
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_BEEF", "beef must be hex")
+		return
+	}
+	beef, err := transaction.NewBeefFromBytes(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_BEEF", "beef could not be parsed")
+		return
+	}
+	tx, perr := findPayingTx(beef, dest)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.code, perr.Error())
+		return
+	}
+	txid, status, err := s.settleP2P(r.Context(), dest, tx, body.Metadata)
+	if err != nil {
+		writeSettleError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"txid": txid, "note": ""})
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -46,6 +47,9 @@ type Server struct {
 	// p2p and destinations are nil unless EnableP2P was called.
 	p2p          *P2PConfig
 	destinations storage.P2PDestinationStore
+	// push is a test seam for the FCM push a stored paymail payment sends; nil
+	// means firebase.SendFCMNotification.
+	push func(ctx context.Context, recipient, messageID, messageBox string)
 	// purchase and subs are nil unless EnablePurchases was called, and then
 	// every handle the app does not generate for free needs a subscription.
 	purchase *PurchaseConfig

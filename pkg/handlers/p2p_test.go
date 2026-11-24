@@ -28,6 +28,10 @@ type p2pEnv struct {
 	lookup *http.ServeMux
 	p2p    *http.ServeMux
 	now    time.Time
+
+	bc     *fakeBroadcaster
+	vf     *fakeVerifier
+	pushes *pushRecorder
 }
 
 func newP2PEnv(t *testing.T, enableP2P bool) *p2pEnv {
@@ -35,8 +39,11 @@ func newP2PEnv(t *testing.T, enableP2P bool) *p2pEnv {
 	e := newLookupEnv(t)
 	env := &p2pEnv{t: t, srv: e.srv, lookup: e.mux, now: e.now()}
 	if enableP2P {
+		env.bc, env.vf, env.pushes = &fakeBroadcaster{}, &fakeVerifier{}, &pushRecorder{}
+		e.srv.push = env.pushes.record
 		e.srv.EnableP2P(P2PConfig{
 			DestinationTTL: 24 * time.Hour, MaxSatoshis: 1_000_000_000, AvatarURL: testAvatar,
+			Broadcaster: env.bc, Verifier: env.vf,
 		}, e.srv.Store.(*fakeStore))
 		env.p2p = e.srv.P2PRoutes()
 	}
