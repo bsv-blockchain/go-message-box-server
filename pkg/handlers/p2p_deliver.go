@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
@@ -88,6 +89,12 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 		return "", http.StatusBadRequest, newP2PError("ERR_NO_MATCHING_OUTPUT", "no output pays the destination script and amount")
 	}
 	txid := tx.TxID().String()
+	// Delivery is recorded on the destination, not inferred from the inbox row:
+	// the wallet deletes the row once it has internalized the payment, and a
+	// replay after that must not store and announce it again.
+	if slices.Contains(dest.DeliveredTxIDs, txid) {
+		return txid, http.StatusOK, nil
+	}
 	if dest.UsedTxID != "" && dest.UsedTxID != txid {
 		return "", http.StatusConflict, newP2PError("ERR_REFERENCE_USED", "reference already paid by another transaction")
 	}
@@ -157,11 +164,13 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 			logger.Error("p2p duplicate check failed", "error", ferr)
 			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
 		}
-		if len(existing) == 1 && existing[0].Sender == p2p.AnyonePublicKeyHex() {
-			return txid, http.StatusOK, nil // a replay: already delivered, already announced
+		if len(existing) != 1 || existing[0].Sender != p2p.AnyonePublicKeyHex() {
+			logger.Error("p2p message id taken by another message")
+			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "could not store the payment message")
 		}
-		logger.Error("p2p message id taken by another message")
-		return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "could not store the payment message")
+		// A replay: the message was stored and announced by an earlier call
+		// that failed before it could record delivery.
+		return s.recordDelivered(wctx, dest.Reference, txid)
 	}
 	if err != nil {
 		logger.Error("p2p insert message failed", "error", err)
@@ -172,6 +181,16 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	if raw, err := json.Marshal(body); err == nil {
 		s.announceStored(wctx, p2p.AnyonePublicKeyHex(), paymentInboxBox, raw, false,
 			[]SendMessageResult{{Recipient: dest.IdentityKey, MessageID: msgID}})
+	}
+	return s.recordDelivered(wctx, dest.Reference, txid)
+}
+
+// recordDelivered marks the transaction delivered on its destination. A failure
+// is a 5xx: the retry finds the stored message, so it only repeats this write.
+func (s *Server) recordDelivered(ctx context.Context, reference, txid string) (string, int, error) {
+	if err := s.destinations.MarkDestinationDelivered(ctx, reference, txid); err != nil {
+		logger.Error("p2p mark delivered failed", "error", err)
+		return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
 	}
 	return txid, http.StatusOK, nil
 }

@@ -546,3 +546,26 @@ func TestP2PBeefIDHeldByForeignMessage(t *testing.T) {
 	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
 	assert.Equal(t, 500, w.Code, w.Body.String())
 }
+
+// The wallet acknowledges and deletes the message after internalizing it. A
+// replay then must not store, push or announce the payment a second time: the
+// destination, not the inbox row, records that it was delivered.
+func TestP2PBeefReplayAfterAcknowledge(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	body := beefBody(pay.v1(t), d.ref, nil)
+	require.Equal(t, 200, e.post(beefPath, body).Code)
+	msgs := e.inbox(idKey)
+	require.Len(t, msgs, 1)
+	n, err := e.srv.Store.AcknowledgeMessages(t.Context(), idKey, []string{msgs[0].MessageID})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	w := e.post(beefPath, body)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	assert.JSONEq(t, `{"txid":"`+pay.child.TxID().String()+`","note":""}`, w.Body.String())
+	assert.Empty(t, e.inbox(idKey), "an acknowledged payment must not come back")
+	assert.Equal(t, 1, e.pushes.count())
+}

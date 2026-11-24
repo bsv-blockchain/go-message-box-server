@@ -234,6 +234,10 @@ func (emptyDestinations) MarkDestinationUsed(context.Context, string, string, ti
 	return nil
 }
 
+func (emptyDestinations) MarkDestinationDelivered(context.Context, string, string) error {
+	return nil
+}
+
 // p2pTestConfig is a lookup config with the receive rail switched on. The
 // handle registry holds one handle, rosa, so the routes have something to
 // resolve.

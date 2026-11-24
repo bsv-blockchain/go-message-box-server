@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -33,7 +34,21 @@ func (f *fakeStore) GetDestination(_ context.Context, reference string, now time
 		return nil, storage.ErrDestinationNotFound
 	}
 	c := *d
+	c.DeliveredTxIDs = slices.Clone(d.DeliveredTxIDs)
 	return &c, nil
+}
+
+func (f *fakeStore) MarkDestinationDelivered(_ context.Context, reference, txid string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.p2p[reference]
+	if d == nil {
+		return storage.ErrDestinationNotFound
+	}
+	if !slices.Contains(d.DeliveredTxIDs, txid) {
+		d.DeliveredTxIDs = append(d.DeliveredTxIDs, txid)
+	}
+	return nil
 }
 
 func (f *fakeStore) MarkDestinationUsed(_ context.Context, reference, txid string, now time.Time) error {

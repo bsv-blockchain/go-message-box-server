@@ -26,7 +26,8 @@ type p2pDestinationDoc struct {
 	PurgeAt          time.Time `bson:"purgeAt"`
 	// UsedTxID is always written, empty until a payment lands, so the claim in
 	// MarkDestinationUsed can match on the empty string.
-	UsedTxID string `bson:"usedTxId"`
+	UsedTxID       string   `bson:"usedTxId"`
+	DeliveredTxIDs []string `bson:"deliveredTxIds,omitempty"`
 }
 
 func (d p2pDestinationDoc) toDestination() *storage.P2PDestination {
@@ -34,7 +35,7 @@ func (d p2pDestinationDoc) toDestination() *storage.P2PDestination {
 		Reference: d.Reference, Handle: d.Handle, IdentityKey: d.IdentityKey, Script: d.Script,
 		Satoshis: d.Satoshis, DerivationPrefix: d.DerivationPrefix, DerivationSuffix: d.DerivationSuffix,
 		CreatedAt: d.CreatedAt.UTC(), AcceptUntil: d.AcceptUntil.UTC(), PurgeAt: d.PurgeAt.UTC(),
-		UsedTxID: d.UsedTxID,
+		UsedTxID: d.UsedTxID, DeliveredTxIDs: d.DeliveredTxIDs,
 	}
 }
 
@@ -94,6 +95,19 @@ func (s *Store) MarkDestinationUsed(ctx context.Context, reference, txid string,
 		return nil
 	}
 	return storage.ErrDestinationUsed
+}
+
+// MarkDestinationDelivered implements storage.P2PDestinationStore.
+func (s *Store) MarkDestinationDelivered(ctx context.Context, reference, txid string) error {
+	res, err := s.db.Collection(p2pDestinationsColl).UpdateOne(ctx,
+		bson.M{fieldID: reference}, bson.M{"$addToSet": bson.M{"deliveredTxIds": txid}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return storage.ErrDestinationNotFound
+	}
+	return nil
 }
 
 var _ storage.P2PDestinationStore = (*Store)(nil)

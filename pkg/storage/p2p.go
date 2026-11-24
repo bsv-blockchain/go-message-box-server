@@ -34,6 +34,10 @@ type P2PDestination struct {
 	AcceptUntil      time.Time // no new payment after this
 	PurgeAt          time.Time // TTL index; CreatedAt+30d, then delivery+30d
 	UsedTxID         string    // "" until a payment lands
+	// DeliveredTxIDs are the transactions whose inbox message was stored. It is
+	// the record of delivery: the message itself is deleted when the wallet
+	// acknowledges it, so its absence proves nothing.
+	DeliveredTxIDs []string
 }
 
 // P2PDestinationStore keeps the destinations. Mongo only.
@@ -47,4 +51,7 @@ type P2PDestinationStore interface {
 	// UsedTxID is empty. The same txid again is nil; another txid is
 	// ErrDestinationUsed.
 	MarkDestinationUsed(ctx context.Context, reference, txid string, now time.Time) error
+	// MarkDestinationDelivered records that txid's inbox message was stored. It
+	// is idempotent and ErrDestinationNotFound for an unknown reference.
+	MarkDestinationDelivered(ctx context.Context, reference, txid string) error
 }

@@ -179,4 +179,32 @@ func RunP2PDestinationTests(t *testing.T, newStore NewP2PDestinationStoreFunc) {
 			t.Fatalf("results %v, want exactly one nil and one ErrDestinationUsed", errs)
 		}
 	})
+
+	t.Run("MarkDelivered", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.CreateDestination(ctx, p2pDest(ref)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetDestination(ctx, ref, p2pT0)
+		if err != nil || len(got.DeliveredTxIDs) != 0 {
+			t.Fatalf("fresh destination = %+v, %v; want nothing delivered", got, err)
+		}
+		// Twice, and a second txid: each is recorded once.
+		for _, tx := range []string{tx1, tx1, tx2} {
+			if err := s.MarkDestinationDelivered(ctx, ref, tx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err = s.GetDestination(ctx, ref, p2pT0)
+		if err != nil || len(got.DeliveredTxIDs) != 2 || got.DeliveredTxIDs[0] != tx1 || got.DeliveredTxIDs[1] != tx2 {
+			t.Fatalf("got %+v, %v; want delivered [%s %s]", got, err, tx1, tx2)
+		}
+	})
+
+	t.Run("MarkDeliveredUnknown", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.MarkDestinationDelivered(ctx, "nope", tx1); !errors.Is(err, storage.ErrDestinationNotFound) {
+			t.Fatalf("err = %v, want ErrDestinationNotFound", err)
+		}
+	})
 }
