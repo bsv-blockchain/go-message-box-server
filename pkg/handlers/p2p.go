@@ -258,6 +258,11 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 // ancestry is a few hundred KB; this leaves room and still refuses abuse.
 const maxBeefBody = 4 << 20
 
+// maxRawParents bounds the distinct parents a raw transaction may spend. Each
+// one costs outside requests on the shared WhatsOnChain limiter, and the body
+// limit alone would allow thousands.
+const maxRawParents = 100
+
 // p2pMetadata is the optional paymail sender metadata. Only the note and the
 // sender's paymail are kept; the rest of the spec's fields are ignored.
 type p2pMetadata struct {
@@ -415,6 +420,14 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "ERR_NO_MATCHING_OUTPUT", "no output pays the destination script and amount")
 		return
 	}
+	distinct := map[string]struct{}{}
+	for _, in := range tx.Inputs {
+		distinct[in.SourceTXID.String()] = struct{}{}
+	}
+	if len(distinct) > maxRawParents {
+		writeError(w, http.StatusBadRequest, "ERR_TOO_MANY_INPUTS", "transaction spends too many distinct parents")
+		return
+	}
 	// One fetch per distinct parent, however many of its outputs are spent.
 	fetched := map[string]*transaction.Transaction{}
 	for _, in := range tx.Inputs {
@@ -423,6 +436,11 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		if !ok {
 			var err error
 			if parent, err = s.p2p.Parents.Parent(r.Context(), id); err != nil {
+				if errors.Is(err, p2p.ErrParentNotFound) {
+					// The input does not exist, so a retry cannot help.
+					writeError(w, http.StatusBadRequest, "ERR_INVALID_TX", "an input transaction does not exist")
+					return
+				}
 				logger.Error("p2p parent fetch failed", "parent", id, "error", err)
 				writeError(w, http.StatusServiceUnavailable, "ERR_PARENT_UNAVAILABLE", "could not fetch an input transaction; safe to retry")
 				return

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bsv-blockchain/go-sdk/chainhash"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -209,4 +210,41 @@ func TestP2PRawDestinationMismatch(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ERR_NO_MATCHING_OUTPUT")
 	assert.Empty(t, e.bc.seen)
 	assert.Empty(t, parents.calls, "the output is checked before any parent is fetched")
+}
+
+func TestP2PRawParentNotFoundIsClientError(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	e.srv.p2p.Parents = newFakeParents() // knows no parent
+
+	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	assert.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "ERR_INVALID_TX")
+	assert.Empty(t, e.bc.seen)
+}
+
+func TestP2PRawTooManyInputs(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	child, err := transaction.NewTransactionFromBytes(pay.child.Bytes())
+	require.NoError(t, err)
+	for i := 0; i <= maxRawParents; i++ {
+		var h chainhash.Hash
+		h[0], h[1] = byte(i), byte(i>>8)
+		child.Inputs = append(child.Inputs, &transaction.TransactionInput{
+			SourceTXID: &h, SequenceNumber: 0xffffffff, UnlockingScript: &script.Script{},
+		})
+	}
+	parents := newFakeParents(pay.parent)
+	e.srv.p2p.Parents = parents
+
+	w := e.post(rawPath, rawBody(child.Hex(), d.ref, nil))
+	assert.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
+	assert.Empty(t, parents.calls, "no parent is fetched past the cap")
+	assert.Empty(t, e.bc.seen)
 }
