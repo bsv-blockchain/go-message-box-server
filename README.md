@@ -415,9 +415,11 @@ An optional receive rail that lets a legacy paymail wallet (HandCash and others)
 | `BROADCASTER_API_KEY`  | Bearer key for the broadcaster, if it needs one                                                                                 | unset   |
 | `WOC_API_KEY`          | WhatsOnChain API key, used for SPV chain tracking and for fetching parents of raw transactions                                 | unset   |
 | `PAYMAIL_AVATAR_URL`   | Avatar URL returned by the public profile capability                                                                            | empty   |
-| `P2P_DESTINATION_TTL`  | How long a payment destination accepts a first payment, e.g. `24h`. Records are kept 30 days regardless, so a retry still works | `24h`   |
+| `P2P_DESTINATION_TTL`  | How long a payment destination accepts a first payment, e.g. `24h`. An unpaid destination is purged shortly after this window; a paid one is kept 30 days, so a retry still works | `24h`   |
 | `P2P_MAX_SATOSHIS`     | Largest amount a destination may be issued for                                                                                  | `1000000000` |
 | `P2P_RATE_PER_MIN`     | Per-IP cap on the P2P routes. They have their own bucket, so lookup traffic cannot starve a payment (one payment makes 3 to 4 calls). Same proxy settings as `LOOKUP_RATE_PER_MIN` | `120`   |
+
+The rail is mainnet only: with `BSV_NETWORK` set to anything else, `P2P_RECEIVE_ENABLED=true` makes the server refuse to start. Each handle may hold 100 open (unpaid, unexpired) destinations; past that, issuing answers 429 `ERR_TOO_MANY_DESTINATIONS`.
 
 Routes, all under `/api/bsvalias/` and all public: `GET id/{alias}@{domain}`, `GET public-profile/{alias}@{domain}`, `POST p2p-payment-destination/{alias}@{domain}`, `POST beef/{alias}@{domain}` and `POST receive-transaction/{alias}@{domain}`. The rail needs `STORAGE_BACKEND=mongo`.
 

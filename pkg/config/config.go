@@ -246,6 +246,14 @@ func loadP2P(cfg *Config) error {
 		if cfg.BroadcasterURL == "" {
 			return fmt.Errorf("P2P_RECEIVE_ENABLED requires BROADCASTER_URL")
 		}
+		// The SPV chain tracker and the parent fetcher are built for mainnet.
+		// On another network every real payment would fail verification while
+		// startup looked healthy, so refuse to start instead.
+		switch strings.ToLower(strings.TrimSpace(cfg.BSVNetwork)) {
+		case "mainnet", "main":
+		default:
+			return fmt.Errorf("P2P_RECEIVE_ENABLED supports mainnet only, BSV_NETWORK is %q", cfg.BSVNetwork)
+		}
 	}
 	return nil
 }

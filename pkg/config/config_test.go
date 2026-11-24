@@ -497,6 +497,35 @@ func TestLoad_P2P(t *testing.T) {
 	}
 }
 
+// The verifier and parent fetcher are hard-wired to mainnet, so enabling the
+// rail on another network must fail at startup, not at the first payment.
+func TestLoad_P2PMainnetOnly(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("PAYMAIL_DOMAIN", "example.com")
+	t.Setenv("PAYMAIL_HOST", "https://mb.example.com")
+	t.Setenv("BROADCASTER_URL", "https://broadcast.bsvblockchain.tech")
+	t.Setenv("P2P_RECEIVE_ENABLED", "true")
+
+	for _, n := range []string{"testnet", "ttn", "tstn", "TestNet"} {
+		t.Setenv("BSV_NETWORK", n)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "mainnet only") {
+			t.Errorf("BSV_NETWORK=%s: err = %v, want a mainnet-only refusal", n, err)
+		}
+	}
+	for _, n := range []string{"mainnet", "MAINNET", "main"} {
+		t.Setenv("BSV_NETWORK", n)
+		if _, err := Load(); err != nil {
+			t.Errorf("BSV_NETWORK=%s: %v", n, err)
+		}
+	}
+	// Off, the network is not this rail's business.
+	t.Setenv("BSV_NETWORK", "testnet")
+	t.Setenv("P2P_RECEIVE_ENABLED", "false")
+	if _, err := Load(); err != nil {
+		t.Errorf("rail off on testnet: %v", err)
+	}
+}
+
 func TestLoad_P2PValues(t *testing.T) {
 	t.Setenv("SERVER_PRIVATE_KEY", "01")
 	t.Setenv("P2P_DESTINATION_TTL", "2h")
