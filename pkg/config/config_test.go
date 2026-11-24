@@ -445,3 +445,82 @@ func TestLoad_WebSockets(t *testing.T) {
 		t.Setenv(k, "")
 	}
 }
+
+func TestLoad_P2P(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PEnabled() || cfg.P2PDestinationTTL != 24*time.Hour || cfg.P2PMaxSatoshis != 1000000000 || cfg.P2PRatePerMin != 120 {
+		t.Errorf("defaults = %+v", cfg)
+	}
+
+	t.Setenv("P2P_RECEIVE_ENABLED", "true")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "P2P_RECEIVE_ENABLED requires PAYMAIL_DOMAIN") {
+		t.Errorf("missing domain: err = %v", err)
+	}
+
+	t.Setenv("PAYMAIL_DOMAIN", "example.com")
+	t.Setenv("PAYMAIL_HOST", "https://mb.example.com")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "P2P_RECEIVE_ENABLED requires BROADCASTER_URL") {
+		t.Errorf("missing broadcaster: err = %v", err)
+	}
+
+	t.Setenv("BROADCASTER_URL", "http://x")
+	if _, err = Load(); err == nil {
+		t.Error("plain http to a remote host must fail")
+	}
+
+	t.Setenv("BROADCASTER_URL", "http://localhost:3000")
+	if _, err = Load(); err != nil {
+		t.Errorf("http localhost must load: %v", err)
+	}
+
+	t.Setenv("BROADCASTER_URL", "https://broadcast.bsvblockchain.tech/")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BroadcasterURL != "https://broadcast.bsvblockchain.tech" || !cfg.P2PEnabled() {
+		t.Errorf("url = %q enabled = %v", cfg.BroadcasterURL, cfg.P2PEnabled())
+	}
+
+	t.Setenv("P2P_RECEIVE_ENABLED", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PEnabled() {
+		t.Error("P2PEnabled must need P2P_RECEIVE_ENABLED")
+	}
+}
+
+func TestLoad_P2PValues(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("P2P_DESTINATION_TTL", "2h")
+	t.Setenv("P2P_MAX_SATOSHIS", "500")
+	t.Setenv("P2P_RATE_PER_MIN", "7")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PDestinationTTL != 2*time.Hour || cfg.P2PMaxSatoshis != 500 || cfg.P2PRatePerMin != 7 {
+		t.Errorf("cfg = %+v", cfg)
+	}
+
+	t.Setenv("P2P_RATE_PER_MIN", "0")
+	if cfg, err = Load(); err != nil || cfg.P2PRatePerMin != 120 {
+		t.Errorf("rate 0 = %v, %v; want default 120", cfg, err)
+	}
+	t.Setenv("P2P_DESTINATION_TTL", "soon")
+	if _, err = Load(); err == nil {
+		t.Error("bad TTL must fail")
+	}
+	t.Setenv("P2P_DESTINATION_TTL", "")
+	t.Setenv("P2P_MAX_SATOSHIS", "0")
+	if _, err = Load(); err == nil {
+		t.Error("zero cap must fail")
+	}
+}
