@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,4 +144,85 @@ func TestHandleCaseFolding(t *testing.T) {
 	require.Equal(t, 200, b.Code)
 	// The response echoes the canonical handle, not what the sender typed.
 	assert.Equal(t, a.Body.String(), b.Body.String())
+}
+
+func (e *p2pEnv) post(path, body string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	w := httptest.NewRecorder()
+	e.p2p.ServeHTTP(w, httptest.NewRequestWithContext(e.t.Context(), http.MethodPost, path, strings.NewReader(body)))
+	return w
+}
+
+type destResponse struct {
+	Outputs []struct {
+		Script   string `json:"script"`
+		Satoshis uint64 `json:"satoshis"`
+	} `json:"outputs"`
+	Reference string `json:"reference"`
+}
+
+const destPath = "/api/bsvalias/p2p-payment-destination/rosa@example.com"
+
+func TestP2PDestination(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+
+	w := e.post(destPath, `{"satoshis":1000}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	var resp destResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Outputs, 1)
+	assert.EqualValues(t, 1000, resp.Outputs[0].Satoshis)
+	assert.Regexp(t, `^[0-9a-f]{32}$`, resp.Reference)
+
+	stored, err := e.srv.Store.(*fakeStore).GetDestination(t.Context(), resp.Reference, e.now)
+	require.NoError(t, err)
+	want, err := p2p.DeriveWith(idKey, stored.DerivationPrefix, stored.DerivationSuffix)
+	require.NoError(t, err)
+	assert.Equal(t, want, resp.Outputs[0].Script)
+	assert.Equal(t, "rosa", stored.Handle)
+	assert.Equal(t, idKey, stored.IdentityKey)
+	assert.EqualValues(t, 1000, stored.Satoshis)
+	assert.Equal(t, e.now.Add(24*time.Hour), stored.AcceptUntil)
+	assert.Equal(t, e.now.Add(storage.P2PDestinationRetention), stored.PurgeAt)
+	assert.Empty(t, stored.UsedTxID)
+}
+
+func TestP2PDestinationInvalidSatoshis(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	for _, body := range []string{
+		`{"satoshis":0}`, `{"satoshis":-1}`, `{"satoshis":1.5}`, `{"satoshis":"1000"}`,
+		`{}`, `{"satoshis":1000000001}`, `{"satoshis":1e3}`, `{"satoshis":99999999999999999999}`,
+	} {
+		w := e.post(destPath, body)
+		assert.Equal(t, 400, w.Code, body)
+		assert.Contains(t, w.Body.String(), "ERR_INVALID_SATOSHIS", body)
+	}
+	// The cap itself is allowed.
+	assert.Equal(t, 200, e.post(destPath, `{"satoshis":1000000000}`).Code)
+}
+
+func TestP2PDestinationBodyTooLarge(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	big := `{"satoshis":1000,"pad":"` + strings.Repeat("a", 5000) + `"}`
+	assert.Equal(t, 413, e.post(destPath, big).Code)
+}
+
+func TestP2PDestinationUnknownHandle(t *testing.T) {
+	e := newP2PEnv(t, true)
+	w := e.post("/api/bsvalias/p2p-payment-destination/nobody@example.com", `{"satoshis":1000}`)
+	assert.Equal(t, 404, w.Code)
+	assert.Empty(t, e.srv.Store.(*fakeStore).p2p)
+}
+
+func TestP2PDestinationsDiffer(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	var a, b destResponse
+	require.NoError(t, json.Unmarshal(e.post(destPath, `{"satoshis":1000}`).Body.Bytes(), &a))
+	require.NoError(t, json.Unmarshal(e.post(destPath, `{"satoshis":1000}`).Body.Bytes(), &b))
+	assert.NotEqual(t, a.Reference, b.Reference)
+	assert.NotEqual(t, a.Outputs[0].Script, b.Outputs[0].Script)
 }

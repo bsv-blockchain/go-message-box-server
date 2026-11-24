@@ -2,8 +2,12 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +52,7 @@ func (s *Server) P2PRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/bsvalias/id/{paymail}", s.PaymailPKI)
 	mux.HandleFunc("GET /api/bsvalias/public-profile/{paymail}", s.PaymailPublicProfile)
+	mux.HandleFunc("POST /api/bsvalias/p2p-payment-destination/{paymail}", s.PaymailP2PDestination)
 	return mux
 }
 
@@ -148,4 +153,99 @@ func (s *Server) PaymailPublicProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"name": rec.Handle, "avatar": s.p2p.AvatarURL})
+}
+
+// maxDestinationBody bounds the destination request. The only field is the
+// amount, so anything larger is not a paymail sender.
+const maxDestinationBody = 4 << 10
+
+// parseSatoshis reads the amount strictly: a JSON integer from 1 to max. A
+// string, a fraction, an exponent, a sign or an overflow is refused, because
+// a sloppy parse here would let a sender pick an amount we did not mean to
+// allow.
+func parseSatoshis(raw json.RawMessage, max uint64) (uint64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil || n == 0 || n > max {
+		return 0, false
+	}
+	return n, true
+}
+
+// PaymailP2PDestination answers the P2P payment destination capability. It
+// derives a one-use BRC-29 output for the handle's owner and keeps the record
+// so the later payment can be matched to it.
+// @Summary Paymail P2P payment destination (capability 2a40af698840)
+// @Tags paymail
+// @Accept json
+// @Produce json
+// @Param paymail path string true "alias@domain"
+// @Success 200 {object} map[string]any
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 413 {object} ErrorResponse
+// @Router /api/bsvalias/p2p-payment-destination/{paymail} [post]
+func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
+	rec, status, err := s.activeHandleFor(r.Context(), r.PathValue("paymail"))
+	if err != nil {
+		writePaymailError(w, status, err)
+		return
+	}
+	var body struct {
+		Satoshis json.RawMessage `json:"satoshis"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDestinationBody))
+	if err := dec.Decode(&body); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_BODY", "body must be JSON")
+		return
+	}
+	sats, ok := parseSatoshis(body.Satoshis, s.p2p.MaxSatoshis)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "ERR_INVALID_SATOSHIS", "satoshis must be a positive integer within the limit")
+		return
+	}
+	// activeHandleFor only returns active records, which carry a key. Copy it
+	// now: the stored destination keeps this key even if the handle is released.
+	identityKey := *rec.IdentityKey
+	d, err := p2p.Derive(identityKey, rand.Reader)
+	if err != nil {
+		logger.Error("p2p derive failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not derive a destination; safe to retry")
+		return
+	}
+	ref := make([]byte, 16)
+	if _, err := rand.Read(ref); err != nil {
+		logger.Error("p2p reference failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not issue a reference; safe to retry")
+		return
+	}
+	reference := hex.EncodeToString(ref)
+	now := s.clock()
+	if err := s.destinations.CreateDestination(r.Context(), storage.P2PDestination{
+		Reference: reference, Handle: rec.Handle, IdentityKey: identityKey,
+		Script: d.Script, Satoshis: sats,
+		DerivationPrefix: d.Prefix, DerivationSuffix: d.Suffix,
+		CreatedAt: now, AcceptUntil: now.Add(s.p2p.DestinationTTL),
+		PurgeAt: now.Add(storage.P2PDestinationRetention),
+	}); err != nil {
+		logger.Error("p2p destination store failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "storage failure; safe to retry")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"outputs":   []map[string]any{{"script": d.Script, "satoshis": sats}},
+		"reference": reference,
+	})
 }
