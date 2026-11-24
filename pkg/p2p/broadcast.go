@@ -1,0 +1,101 @@
+package p2p
+
+// Arcade's real answers, recorded 2026-11-24 against
+// https://broadcast.bsvblockchain.tech with go-sdk v1.7.8 broadcaster.Arc and
+// the mainnet transaction 15bed688d2f5e7db96c3763d35fb827400cbe77a06ae865fda47e0a0b8e9867f
+// (already mined, so submitting it is harmless). The tests replay these bodies.
+//
+// Request: POST {url}/tx, Content-Type: application/json, body {"rawTx":"<hex>"}.
+// Arc sends Extended Format when every input carries its source output, and
+// plain raw hex otherwise.
+//
+//	Raw hex, parents missing:
+//	  HTTP 400
+//	  {"detail":"Missing input scripts: Transaction could not be transformed to extended format","error":"transaction failed validation","reason":"transaction could not be transformed to extended format: missing input source data: input 0","status":460,"title":"Not extended format","txid":"15be...867f","type":"https://bitcoin-sv.github.io/arc/#/errors?id=_460"}
+//	  Broadcast -> failure code "400", description = detail.
+//
+//	EF, first submission:
+//	  HTTP 202
+//	  {"txid":"15be...867f","status":202,"txStatus":"RECEIVED"}
+//	  Broadcast -> txid, nil.
+//
+//	EF, the same transaction submitted again:
+//	  HTTP 202, the identical body.
+//	  Broadcast -> txid, nil. Arcade is idempotent, so a retry or a transaction
+//	  HandCash broadcast too needs no special case. Some ARC servers instead
+//	  answer a duplicate with a 4xx naming "already known" or "already in the
+//	  mempool"; isAlreadyKnown treats those as success too.
+//
+// go-sdk Arc parses all of these, so no direct client is needed. The caller
+// must attach each input's source transaction, or Arcade refuses with the 460
+// above.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/transaction/broadcaster"
+	"github.com/bsv-blockchain/go-sdk/util"
+)
+
+// ErrRejected means the network refused the transaction (a 4xx, a double
+// spend, an invalid script). It is final: retrying the same bytes cannot
+// help. Every other Broadcast error is transient or ours, so the caller
+// should answer 5xx and let the sender retry.
+var ErrRejected = errors.New("transaction rejected")
+
+// arcade is a Broadcaster backed by go-sdk's Arc client pointed at Arcade.
+type arcade struct{ arc *broadcaster.Arc }
+
+// NewArcade returns a Broadcaster for an Arcade (or ARC) server. apiKey may be
+// empty. A nil client uses http.DefaultClient, which has no timeout, so
+// callers should pass a client with one (or a context deadline).
+func NewArcade(url, apiKey string, client util.HTTPClient) Broadcaster {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &arcade{arc: &broadcaster.Arc{ApiUrl: strings.TrimRight(url, "/"), ApiKey: apiKey, Client: client}}
+}
+
+func (a *arcade) Broadcast(ctx context.Context, tx *transaction.Transaction) (string, error) {
+	ok, fail := a.arc.BroadcastCtx(ctx, tx)
+	if fail == nil {
+		return ok.Txid, nil
+	}
+	if isAlreadyKnown(fail.Description) {
+		return tx.TxID().String(), nil
+	}
+	if isFinalFailure(fail.Code) {
+		return "", fmt.Errorf("%w: %s", ErrRejected, fail.Description)
+	}
+	// Transport errors and 5xx. Arc reports a transport error as code "500".
+	return "", fmt.Errorf("broadcast failed (%s): %s", fail.Code, fail.Description)
+}
+
+// isFinalFailure is true for an HTTP 4xx and for the txStatus values ARC
+// answers with HTTP 200 for a transaction the network refused. It is false for
+// 5xx, transport errors and a response we cannot read (ERR_INVALID_RESPONSE,
+// ERR_TXID_MISMATCH), which say nothing about the transaction.
+func isFinalFailure(code string) bool {
+	if n, err := strconv.Atoi(code); err == nil {
+		return n >= 400 && n < 500
+	}
+	switch code {
+	case "REJECTED", "DOUBLE_SPEND_ATTEMPTED", "INVALID", "MALFORMED", "MINED_IN_STALE_BLOCK":
+		return true
+	}
+	return false
+}
+
+func isAlreadyKnown(desc string) bool {
+	d := strings.ToLower(desc)
+	return strings.Contains(d, "already known") ||
+		strings.Contains(d, "already in the mempool") ||
+		strings.Contains(d, "already in mempool") ||
+		strings.Contains(d, "txn-already-known")
+}
