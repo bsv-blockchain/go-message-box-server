@@ -394,17 +394,36 @@ func TestP2PBeefReplay(t *testing.T) {
 	assert.Equal(t, 1, e.pushes.count())
 }
 
-// Review Focus 2.
-func TestP2PBeefSecondTransactionRefused(t *testing.T) {
+// A second transaction paying the destination is delivered under its own id,
+// not refused: it is on the network paying the recipient either way.
+func TestP2PBeefSecondTransactionDelivered(t *testing.T) {
 	e := newP2PEnv(t, true)
-	e.register("rosa")
+	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	require.Equal(t, 200, e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
-	calls := e.bc.calls
-	w := e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
-	assert.Equal(t, 409, w.Code)
-	assert.Contains(t, w.Body.String(), "ERR_REFERENCE_USED")
-	assert.Equal(t, calls, e.bc.calls)
+	second := newPayment(t, d.script, d.sats)
+	w := e.post(beefPath, beefBody(second.v1(t), d.ref, nil))
+	assert.Equal(t, 200, w.Code, w.Body.String())
+	assert.Equal(t, 2, e.bc.calls)
+	assert.Len(t, e.inbox(idKey), 2)
+}
+
+// The race loser's mark fails by design. If its delivery then fails, the
+// retry must still deliver it although the mark names the winner.
+func TestP2PBeefRaceLoserRetryDelivers(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	winner := newPayment(t, d.script, d.sats)
+	loser := newPayment(t, d.script, d.sats)
+	fs := e.srv.Store.(*fakeStore)
+	require.NoError(t, fs.MarkDestinationUsed(t.Context(), d.ref, winner.child.TxID().String(), e.now))
+
+	w := e.post(beefPath, beefBody(loser.v1(t), d.ref, nil))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	msgs := e.inbox(idKey)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, p2pMessageID(d.ref, loser.child.TxID().String()), msgs[0].MessageID)
 }
 
 func TestP2PBeefRaceOnMarkUsed(t *testing.T) {

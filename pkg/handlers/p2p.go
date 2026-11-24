@@ -342,7 +342,6 @@ func decodeReceiveBody(w http.ResponseWriter, r *http.Request, v any) bool {
 // @Success 200 {object} map[string]string
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
-// @Failure 409 {object} ErrorResponse
 // @Failure 413 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Router /api/bsvalias/beef/{paymail} [post]
@@ -393,7 +392,6 @@ func (s *Server) PaymailBEEF(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} map[string]string
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
-// @Failure 409 {object} ErrorResponse
 // @Failure 413 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Router /api/bsvalias/receive-transaction/{paymail} [post]

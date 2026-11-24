@@ -11,7 +11,8 @@ var (
 	// ErrDestinationNotFound is a reference that was never issued, was purged,
 	// or is past AcceptUntil with no payment on it.
 	ErrDestinationNotFound = errors.New("p2p destination not found")
-	// ErrDestinationUsed is a second, different transaction for one reference.
+	// ErrDestinationUsed is a second, different transaction for one reference
+	// from MarkDestinationUsed. The caller does not refuse the payment for it.
 	ErrDestinationUsed = errors.New("p2p destination already used by another transaction")
 )
 
@@ -21,7 +22,8 @@ var (
 const P2PDestinationRetention = 30 * 24 * time.Hour
 
 // P2PDestination is one payment destination handed to a paymail sender. It is
-// single use: the first transaction that lands on it owns it.
+// issued for one payment: the first transaction that lands on it holds the
+// mark, and a later one that pays the same output is still delivered.
 type P2PDestination struct {
 	Reference        string // 32 lowercase hex, random
 	Handle           string

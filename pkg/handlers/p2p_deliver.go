@@ -95,13 +95,16 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	if slices.Contains(dest.DeliveredTxIDs, txid) {
 		return txid, http.StatusOK, nil
 	}
-	if dest.UsedTxID != "" && dest.UsedTxID != txid {
-		return "", http.StatusConflict, newP2PError("ERR_REFERENCE_USED", "reference already paid by another transaction")
-	}
-
 	// A destination already marked with this txid was verified and broadcast
 	// by an earlier call, because the mark follows the broadcast. A retry
 	// then only has to finish delivery, so a chain tracker outage cannot fail it.
+	//
+	// Another txid on a marked destination is not refused. Two transactions can
+	// race for one reference and both broadcast; the loser's mark fails by
+	// design, so refusing it on retry would strand a payment that is already on
+	// the network. Any transaction that pays the destination's script and amount
+	// pays the recipient, so it is verified, broadcast (idempotent) and
+	// delivered under its own message id.
 	if dest.UsedTxID != txid {
 		if err := s.p2p.Verifier.Verify(ctx, tx); err != nil {
 			if errors.Is(err, p2p.ErrInvalidProof) {
@@ -123,8 +126,8 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	// below may be cut short by the sender hanging up.
 	wctx := context.WithoutCancel(ctx)
 	if err := s.destinations.MarkDestinationUsed(wctx, dest.Reference, txid, s.clock()); err != nil {
-		// ErrDestinationUsed is a race with another transaction for the same
-		// reference. Both pay the recipient, so both are delivered.
+		// ErrDestinationUsed is another transaction holding the mark. Both pay
+		// the recipient, so both are delivered.
 		if !errors.Is(err, storage.ErrDestinationUsed) {
 			logger.Error("p2p mark used failed", "error", err)
 			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
