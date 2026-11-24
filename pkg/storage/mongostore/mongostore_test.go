@@ -748,3 +748,19 @@ func TestDevices_OldReplicaTwinOfARegisteredPair(t *testing.T) {
 		}
 	})
 }
+
+// TestP2PDestinationConformance_Mongo runs the paymail destination contract.
+func TestP2PDestinationConformance_Mongo(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGO_TEST_URI not set")
+	}
+	database := os.Getenv("MONGO_TEST_DATABASE")
+	if database == "" {
+		database = "messagebox_test"
+	}
+
+	storagetest.RunP2PDestinationTests(t, func(t *testing.T) storage.P2PDestinationStore {
+		return newMongo(t, uri, database).(*Store)
+	})
+}

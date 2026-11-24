@@ -1,0 +1,50 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// Errors returned by P2PDestinationStore.
+var (
+	// ErrDestinationNotFound is a reference that was never issued, was purged,
+	// or is past AcceptUntil with no payment on it.
+	ErrDestinationNotFound = errors.New("p2p destination not found")
+	// ErrDestinationUsed is a second, different transaction for one reference.
+	ErrDestinationUsed = errors.New("p2p destination already used by another transaction")
+)
+
+// P2PDestinationRetention is how long a destination record outlives its
+// creation, and then its delivery. A sender that lost the response may retry
+// long after the accept window, and the retry has to find the record.
+const P2PDestinationRetention = 30 * 24 * time.Hour
+
+// P2PDestination is one payment destination handed to a paymail sender. It is
+// single use: the first transaction that lands on it owns it.
+type P2PDestination struct {
+	Reference        string // 32 lowercase hex, random
+	Handle           string
+	IdentityKey      string // recipient, 66 hex; fixed at issue so a released handle cannot redirect a payment
+	Script           string // locking script hex
+	Satoshis         uint64
+	DerivationPrefix string
+	DerivationSuffix string
+	CreatedAt        time.Time
+	AcceptUntil      time.Time // no new payment after this
+	PurgeAt          time.Time // TTL index; CreatedAt+30d, then delivery+30d
+	UsedTxID         string    // "" until a payment lands
+}
+
+// P2PDestinationStore keeps the destinations. Mongo only.
+type P2PDestinationStore interface {
+	CreateDestination(ctx context.Context, d P2PDestination) error
+	// GetDestination returns ErrDestinationNotFound for a missing record, and
+	// for an unused one when now is past AcceptUntil. A used record is returned
+	// whatever the time, so a replay after the window still succeeds.
+	GetDestination(ctx context.Context, reference string, now time.Time) (*P2PDestination, error)
+	// MarkDestinationUsed sets UsedTxID and PurgeAt = now+30d atomically when
+	// UsedTxID is empty. The same txid again is nil; another txid is
+	// ErrDestinationUsed.
+	MarkDestinationUsed(ctx context.Context, reference, txid string, now time.Time) error
+}

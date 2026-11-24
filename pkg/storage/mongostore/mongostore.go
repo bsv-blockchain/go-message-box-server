@@ -30,6 +30,8 @@ const (
 	// subscriptionsColl holds the store subscriptions that pay for handles.
 	subscriptionsColl = "handle_subscriptions"
 	countersColl      = "counters"
+
+	p2pDestinationsColl = "p2p_destinations"
 )
 
 // Field names shared by several collections.
@@ -141,6 +143,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 				Options: options.Index().SetUnique(true).
 					SetPartialFilterExpression(bson.D{{Key: fieldIdentityKey, Value: bson.D{{Key: "$type", Value: "string"}}}}),
 			},
+		},
+		p2pDestinationsColl: {
+			// Records expire on their own purgeAt, which is pushed out on
+			// delivery; expireAfterSeconds 0 means "at that time".
+			{Keys: bson.D{{Key: "purgeAt", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
 		},
 		subscriptionsColl: {
 			// The handle's subscriptions, read on every lapse and claim.

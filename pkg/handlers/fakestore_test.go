@@ -24,6 +24,7 @@ type fakeStore struct {
 	fees     map[string]int
 	handles  map[string]*storage.HandleRecord
 	subs     map[string]*storage.Subscription
+	p2p      map[string]*storage.P2PDestination
 
 	// beforeSetIfAbsent, when set, runs at the start of SetPermissionIfAbsent so
 	// a test can land a write in the window the fee fallback races against.
@@ -61,6 +62,7 @@ func newFakeStore() *fakeStore {
 		perms:    map[permKey]*storage.Permission{},
 		devices:  map[deviceKey]*storage.Device{},
 		subs:     map[string]*storage.Subscription{},
+		p2p:      map[string]*storage.P2PDestination{},
 		fees:     map[string]int{},
 		handles:  map[string]*storage.HandleRecord{},
 	}
