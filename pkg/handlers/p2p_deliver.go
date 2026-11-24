@@ -146,7 +146,7 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	for i, b := range atomic {
 		tok.Transaction[i] = int(b)
 	}
-	body, err := p2p.InboxBody(tok)
+	live, body, err := p2p.InboxMessage(tok)
 	if err != nil {
 		logger.Error("p2p token encode failed", "error", err)
 		return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "could not package the payment; safe to retry")
@@ -181,7 +181,9 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	}
 
 	s.pushPayment(wctx, dest.IdentityKey, msgID)
-	if raw, err := json.Marshal(body); err == nil {
+	// The live text is the token alone: sendMessage announces the inner body,
+	// and the wrapper is added only to the stored row.
+	if raw, err := json.Marshal(live); err == nil {
 		s.announceStored(wctx, p2p.AnyonePublicKeyHex(), paymentInboxBox, raw, false,
 			[]SendMessageResult{{Recipient: dest.IdentityKey, MessageID: msgID}})
 	}
