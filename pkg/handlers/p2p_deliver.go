@@ -15,6 +15,18 @@ import (
 	"github.com/bsv-blockchain/go-message-box-server/pkg/storage"
 )
 
+// p2pMessageIDPrefix marks inbox messages the paymail rail stored. sendMessage
+// refuses client ids with it, so no user can take an id a payment will need.
+const p2pMessageIDPrefix = "p2p-"
+
+// p2pMessageID is the inbox id of one payment to one destination. The message
+// id is the store's global key, so it names the destination as well as the
+// transaction: one transaction may pay several destinations, and each needs its
+// own message. Replays of the same pair still collide, as intended.
+func p2pMessageID(reference, txid string) string {
+	return p2pMessageIDPrefix + reference + "-" + txid
+}
+
 // p2pError carries the paymail error code for a settle failure.
 type p2pError struct {
 	code, msg string
@@ -131,13 +143,25 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	}
 
 	// The destination's stored key, not the handle's current owner.
-	msgID := "p2p-" + txid
+	msgID := p2pMessageID(dest.Reference, txid)
 	err = s.Store.InsertMessage(wctx, storage.NewMessage{
 		MessageID: msgID, Recipient: dest.IdentityKey, MessageBox: paymentInboxBox,
 		Sender: p2p.AnyonePublicKeyHex(), Body: body,
 	})
 	if errors.Is(err, storage.ErrDuplicateMessage) {
-		return txid, http.StatusOK, nil // a replay: already delivered, already announced
+		// The id names this destination and transaction, so a duplicate is a
+		// replay only if the stored row is ours. Anything else is a conflict we
+		// must not answer 200 to: the payment would never reach the recipient.
+		existing, ferr := s.fetchMessagePageRows(wctx, dest.IdentityKey, paymentInboxBox, 0, 1, &msgID)
+		if ferr != nil {
+			logger.Error("p2p duplicate check failed", "error", ferr)
+			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
+		}
+		if len(existing) == 1 && existing[0].Sender == p2p.AnyonePublicKeyHex() {
+			return txid, http.StatusOK, nil // a replay: already delivered, already announced
+		}
+		logger.Error("p2p message id taken by another message")
+		return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "could not store the payment message")
 	}
 	if err != nil {
 		logger.Error("p2p insert message failed", "error", err)

@@ -120,6 +120,10 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, senderKey s
 			writeError(w, 400, "ERR_INVALID_MESSAGEID", "Each messageId must be a non-empty string.")
 			return
 		}
+		if strings.HasPrefix(id, p2pMessageIDPrefix) {
+			writeError(w, 400, "ERR_INVALID_MESSAGEID", "messageId must not start with "+p2pMessageIDPrefix+", which is reserved.")
+			return
+		}
 	}
 
 	// Validate recipient keys

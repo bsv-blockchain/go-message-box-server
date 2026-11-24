@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -240,7 +241,7 @@ func TestP2PBeefAcceptsEveryFormat(t *testing.T) {
 
 			msgs := e.inbox(idKey)
 			require.Len(t, msgs, 1)
-			assert.Equal(t, "p2p-"+txid, msgs[0].MessageID)
+			assert.Equal(t, p2pMessageID(d.ref, txid), msgs[0].MessageID)
 			assert.Equal(t, p2p.AnyonePublicKeyHex(), msgs[0].Sender)
 			tok := decodeToken(t, msgs[0].Body)
 			stored, err := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, e.now)
@@ -417,7 +418,7 @@ func TestP2PBeefRaceOnMarkUsed(t *testing.T) {
 	require.Equal(t, 200, w.Code, w.Body.String())
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)
-	assert.Equal(t, "p2p-"+pay.child.TxID().String(), msgs[0].MessageID)
+	assert.Equal(t, p2pMessageID(d.ref, pay.child.TxID().String()), msgs[0].MessageID)
 }
 
 // racingStore reports ErrDestinationUsed from MarkDestinationUsed.
@@ -473,4 +474,75 @@ func emptyBeefHex(t *testing.T) string {
 	b, err := transaction.NewBeef().Bytes()
 	require.NoError(t, err)
 	return hex.EncodeToString(b)
+}
+
+// twoOutputPayment is one transaction paying two destinations, as a batch
+// payment to two handles on this server does.
+func twoOutputPayment(t *testing.T, a, b issued) payment {
+	t.Helper()
+	key, err := ec.NewPrivateKey()
+	require.NoError(t, err)
+	addr, err := script.NewAddressFromPublicKey(key.PubKey(), true)
+	require.NoError(t, err)
+	lock, err := p2pkh.Lock(addr)
+	require.NoError(t, err)
+	parent := transaction.NewTransaction()
+	parent.AddOutput(&transaction.TransactionOutput{Satoshis: a.sats + b.sats + 5000, LockingScript: lock})
+	parent.MerklePath = fakeMerklePath(t, parent)
+	unlock, err := p2pkh.Unlock(key, nil)
+	require.NoError(t, err)
+	child := transaction.NewTransaction()
+	child.AddInputFromTx(parent, 0, unlock)
+	for _, d := range []issued{a, b} {
+		s, err := script.NewFromHex(d.script)
+		require.NoError(t, err)
+		child.AddOutput(&transaction.TransactionOutput{Satoshis: d.sats, LockingScript: s})
+	}
+	require.NoError(t, child.Sign())
+	return payment{parent: parent, child: child}
+}
+
+// One transaction paying two destinations must credit both recipients: the
+// inbox id is per destination, not per transaction.
+func TestP2PBeefOneTxTwoDestinations(t *testing.T) {
+	e := newP2PEnv(t, true)
+	rosa := e.register("rosa")
+	bob := e.register("bob")
+	da := e.issue("rosa", 1000)
+	db := e.issue("bob", 2000)
+	pay := twoOutputPayment(t, da, db)
+	beef := pay.v1(t)
+
+	require.Equal(t, 200, e.post(beefPath, beefBody(beef, da.ref, nil)).Code)
+	require.Equal(t, 200, e.post("/api/bsvalias/beef/bob@example.com", beefBody(beef, db.ref, nil)).Code)
+
+	require.Len(t, e.inbox(rosa), 1)
+	require.Len(t, e.inbox(bob), 1, "the second destination must be delivered, not taken for a replay")
+	assert.EqualValues(t, 2000, decodeToken(t, e.inbox(bob)[0].Body).Amount)
+	assert.Equal(t, 2, e.pushes.count())
+}
+
+// A user cannot squat on the id a payment will be stored under: the p2p- prefix
+// is reserved for the paymail rail, on HTTP and so on the live socket too.
+func TestSendMessage_P2PPrefixReserved(t *testing.T) {
+	srv := setupTestServer(t)
+	sender := testKey(t).PubKey().ToDERHex()
+	wantStatus(t, postSendMessage(t, srv, sender, mockIdentityKey, "p2p-"+strings.Repeat("a", 64)), 400, "ERR_INVALID_MESSAGEID")
+	wantStatus(t, postSendMessage(t, srv, sender, mockIdentityKey, "p2p-anything"), 400, "ERR_INVALID_MESSAGEID")
+	wantStatus(t, postSendMessage(t, srv, sender, mockIdentityKey, "not-p2p-"), 200, "")
+}
+
+// A row already holding the id, not ours, is a conflict: answering 200 would
+// drop a paid payment.
+func TestP2PBeefIDHeldByForeignMessage(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	require.NoError(t, e.srv.Store.InsertMessage(t.Context(), storage.NewMessage{
+		MessageID: p2pMessageID(d.ref, pay.child.TxID().String()), Recipient: idKey,
+		MessageBox: "payment_inbox", Sender: testKey(t).PubKey().ToDERHex(), Body: "forged",
+	}))
+	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	assert.Equal(t, 500, w.Code, w.Body.String())
 }

@@ -81,7 +81,7 @@ func TestP2PRawAcceptsParentFromFetcher(t *testing.T) {
 
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)
-	assert.Equal(t, "p2p-"+txid, msgs[0].MessageID)
+	assert.Equal(t, p2pMessageID(d.ref, txid), msgs[0].MessageID)
 	tok := decodeToken(t, msgs[0].Body)
 	assert.Equal(t, "hi", tok.Note)
 	assert.EqualValues(t, 1000, tok.Amount)
