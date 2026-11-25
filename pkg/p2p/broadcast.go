@@ -22,9 +22,11 @@ package p2p
 //	EF, the same transaction submitted again:
 //	  HTTP 202, the identical body.
 //	  Broadcast -> txid, nil. Arcade is idempotent, so a retry or a transaction
-//	  HandCash broadcast too needs no special case. Some ARC servers instead
-//	  answer a duplicate with a 4xx naming "already known" or "already in the
-//	  mempool"; isAlreadyKnown treats those as success too.
+//	  HandCash broadcast too needs no special case. Standard ARC answers a
+//	  duplicate with HTTP 200 and an accepted txStatus such as SEEN_ON_NETWORK,
+//	  which go-sdk already reports as success. So no text match is needed:
+//	  failures are classified by code only, and response text never decides
+//	  success.
 //
 // go-sdk Arc parses all of these, so no direct client is needed. The caller
 // must attach each input's source transaction, or Arcade refuses with the 460
@@ -69,9 +71,6 @@ func (a *arcade) Broadcast(ctx context.Context, tx *transaction.Transaction) (st
 	if fail == nil {
 		return ok.Txid, nil
 	}
-	if isAlreadyKnown(fail.Description) {
-		return tx.TxID().String(), nil
-	}
 	if isFinalFailure(fail.Code) {
 		return "", fmt.Errorf("%w: %s", ErrRejected, fail.Description)
 	}
@@ -103,12 +102,4 @@ func isFinalFailure(code string) bool {
 		return true
 	}
 	return false
-}
-
-func isAlreadyKnown(desc string) bool {
-	d := strings.ToLower(desc)
-	return strings.Contains(d, "already known") ||
-		strings.Contains(d, "already in the mempool") ||
-		strings.Contains(d, "already in mempool") ||
-		strings.Contains(d, "txn-already-known")
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -368,6 +370,39 @@ func TestP2PBeefBroadcasterDown(t *testing.T) {
 	assert.Empty(t, e.inbox(idKey))
 	stored, _ := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, e.now)
 	assert.Empty(t, stored.UsedTxID)
+}
+
+// An upstream whose error text says "already known" is still a failure: the
+// payment is not delivered and the destination is not marked.
+func TestP2PBeefBroadcastFailureSayingAlreadyKnown(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	pay := newPayment(t, d.script, d.sats)
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		code   int
+		errTag string
+	}{
+		{"5xx", 503, `{"detail":"upstream says transaction already known; retry later"}`, 503, "ERR_BROADCAST_UNAVAILABLE"},
+		{"double spend", 200, `{"txid":"` + pay.child.TxID().String() + `","txStatus":"DOUBLE_SPEND_ATTEMPTED","extraInfo":"competing transaction already known"}`, 400, "ERR_REJECTED"},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		e.srv.p2p.Broadcaster = p2p.NewArcade(srv.URL, "", srv.Client())
+		w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+		srv.Close()
+		assert.Equal(t, tc.code, w.Code, tc.name)
+		assert.Contains(t, w.Body.String(), tc.errTag, tc.name)
+		assert.Empty(t, e.inbox(idKey), tc.name)
+		stored, _ := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, e.now)
+		assert.Empty(t, stored.UsedTxID, tc.name)
+	}
 }
 
 func TestP2PBeefPayingTxNotLast(t *testing.T) {

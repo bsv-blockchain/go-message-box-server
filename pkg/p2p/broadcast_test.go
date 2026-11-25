@@ -70,12 +70,32 @@ func TestArcadeSeenOnNetwork(t *testing.T) {
 	require.Equal(t, minedTxid, txid)
 }
 
-func TestArcadeAlreadyKnownTextIsSuccess(t *testing.T) {
+// Text never decides success. A 409 is a verdict even when its body says
+// "already known".
+func TestArcadeAlreadyKnownTextIsNotSuccess(t *testing.T) {
 	srv := arcadeFake(t, 409, `{"detail":"txn-already-known","status":409,"title":"Conflict"}`, nil)
 	defer srv.Close()
+	_, err := NewArcade(srv.URL, "", srv.Client()).Broadcast(context.Background(), minedTx(t))
+	require.ErrorIs(t, err, ErrRejected)
+}
+
+// A 5xx is transient whatever its text says.
+func TestArcadeServerErrorSayingAlreadyKnownIsTransient(t *testing.T) {
+	srv := arcadeFake(t, 503, `{"detail":"upstream says transaction already known; retry later"}`, nil)
+	defer srv.Close()
 	txid, err := NewArcade(srv.URL, "", srv.Client()).Broadcast(context.Background(), minedTx(t))
-	require.NoError(t, err)
-	require.Equal(t, minedTxid, txid)
+	require.Error(t, err)
+	require.Empty(t, txid)
+	require.NotErrorIs(t, err, ErrRejected)
+}
+
+// A refused double spend is a rejection even when its extraInfo mentions a
+// transaction that is "already known".
+func TestArcadeDoubleSpendSayingAlreadyKnownIsRejected(t *testing.T) {
+	srv := arcadeFake(t, 200, `{"txid":"`+minedTxid+`","txStatus":"DOUBLE_SPEND_ATTEMPTED","extraInfo":"competing transaction already known"}`, nil)
+	defer srv.Close()
+	_, err := NewArcade(srv.URL, "", srv.Client()).Broadcast(context.Background(), minedTx(t))
+	require.ErrorIs(t, err, ErrRejected)
 }
 
 func TestArcadeRejection(t *testing.T) {
