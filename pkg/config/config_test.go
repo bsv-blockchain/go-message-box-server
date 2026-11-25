@@ -539,6 +539,18 @@ func TestLoad_P2PValues(t *testing.T) {
 		t.Errorf("cfg = %+v", cfg)
 	}
 
+	if cfg.P2PVerifyConcurrency != 4 {
+		t.Errorf("verify concurrency default = %d, want 4", cfg.P2PVerifyConcurrency)
+	}
+	t.Setenv("P2P_VERIFY_CONCURRENCY", "2")
+	if cfg, err = Load(); err != nil || cfg.P2PVerifyConcurrency != 2 {
+		t.Errorf("verify concurrency 2 = %v, %v", cfg, err)
+	}
+	t.Setenv("P2P_VERIFY_CONCURRENCY", "0")
+	if cfg, err = Load(); err != nil || cfg.P2PVerifyConcurrency != 4 {
+		t.Errorf("verify concurrency 0 = %v, %v; want default 4", cfg, err)
+	}
+
 	t.Setenv("P2P_RATE_PER_MIN", "0")
 	if cfg, err = Load(); err != nil || cfg.P2PRatePerMin != 120 {
 		t.Errorf("rate 0 = %v, %v; want default 120", cfg, err)

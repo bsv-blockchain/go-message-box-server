@@ -37,12 +37,24 @@ type P2PConfig struct {
 	Broadcaster    p2p.Broadcaster
 	Verifier       p2p.Verifier
 	Parents        p2p.ParentFetcher
+	// VerifyConcurrency caps SPV verifications that run at once, process-wide.
+	// Zero or less means defaultVerifyConcurrency.
+	VerifyConcurrency int
 }
+
+// defaultVerifyConcurrency bounds peak verification memory and CPU. One
+// verification of a hostile script can use about 150 MB and a core until it
+// ends, whatever its deadline, so the cap, not the deadline, is the bound.
+const defaultVerifyConcurrency = 4
 
 // EnableP2P turns the paymail receive routes on. EnableLookup must also have
 // been called: every route resolves the handle through the registry.
 func (s *Server) EnableP2P(c P2PConfig, store storage.P2PDestinationStore) {
-	s.p2p, s.destinations = &c, store
+	n := c.VerifyConcurrency
+	if n <= 0 {
+		n = defaultVerifyConcurrency
+	}
+	s.p2p, s.destinations, s.verifySlots = &c, store, make(chan struct{}, n)
 }
 
 // P2PRoutes returns the /api/bsvalias/ routes. EnableP2P and EnableLookup must

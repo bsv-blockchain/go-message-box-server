@@ -1,7 +1,6 @@
 package p2p
 
 import (
-	"errors"
 	"testing"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -82,8 +81,7 @@ func TestStandardSpendsRefusesExpensiveScript(t *testing.T) {
 	parent := spend(grand, pushes(t, make([]byte, 71), make([]byte, 33)))
 	parent.Outputs[0].LockingScript = expensiveLock(t)
 	child := spend(parent, &script.Script{})
-	err := CheckStandardSpends(child)
-	assert.True(t, errors.Is(err, ErrNonStandard), "%v", err)
+	assert.ErrorIs(t, CheckStandardSpends(child), ErrNonStandard)
 }
 
 func TestStandardSpendsChecksDeepUnminedAncestors(t *testing.T) {

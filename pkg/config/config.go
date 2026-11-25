@@ -58,11 +58,13 @@ type Config struct {
 	WOCAPIKey         string
 	PaymailAvatarURL  string
 	P2PRatePerMin     int
-	HandleCooldown    time.Duration
-	AdminIdentityKeys []string
-	LookupRatePerMin  int
-	TrustProxy        bool
-	TrustedProxyHops  int
+	// P2PVerifyConcurrency caps SPV verifications that run at once.
+	P2PVerifyConcurrency int
+	HandleCooldown       time.Duration
+	AdminIdentityKeys    []string
+	LookupRatePerMin     int
+	TrustProxy           bool
+	TrustedProxyHops     int
 	// ClientIPHeader, when set, names a single-valued header a proxy sets to the
 	// real client address (e.g. "CF-Connecting-IP"); it takes precedence over
 	// TrustProxy/TrustedProxyHops in RateLimiter.clientIP. Only set it once the
@@ -209,6 +211,10 @@ func loadP2P(cfg *Config) error {
 		cfg.P2PRatePerMin = 120
 	}
 
+	cfg.P2PVerifyConcurrency = getEnvInt("P2P_VERIFY_CONCURRENCY", 4)
+	if cfg.P2PVerifyConcurrency < 1 {
+		cfg.P2PVerifyConcurrency = 4
+	}
 	cfg.P2PDestinationTTL = 24 * time.Hour
 	if v := strings.TrimSpace(os.Getenv("P2P_DESTINATION_TTL")); v != "" {
 		d, err := time.ParseDuration(v)

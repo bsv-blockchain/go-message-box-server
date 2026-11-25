@@ -82,6 +82,11 @@ func matchOutput(tx *transaction.Transaction, dest *storage.P2PDestination) int 
 // It is a variable so tests can shorten it.
 var p2pSettleTimeout = 45 * time.Second
 
+// p2pVerifyTimeout bounds one SPV verification inside the settle deadline. A
+// deadline cannot stop one long opcode, so the verify slots bound memory; this
+// keeps a slow chain tracker from holding a slot for the whole settle phase.
+var p2pVerifyTimeout = 10 * time.Second
+
 // settleP2P takes a payment for a destination from the check to the inbox. The
 // order is the safety property: nothing is marked used or delivered until the
 // network has accepted the transaction, and a replay of the same transaction
@@ -114,7 +119,16 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 		// tracker or broadcaster cannot hold the request open.
 		bctx, cancel := context.WithTimeout(ctx, p2pSettleTimeout)
 		defer cancel()
-		if err := s.p2p.Verifier.Verify(bctx, tx); err != nil {
+		// Standard spends only, before any script runs: an unmined ancestor
+		// that spends a costly script would hold a verify slot for seconds.
+		if err := p2p.CheckStandardSpends(tx); err != nil {
+			logger.Warn("p2p non-standard spend refused", "error", err)
+			return "", http.StatusBadRequest, newP2PError("ERR_NONSTANDARD", "an unmined transaction spends a non-standard output; only P2PKH and P2PK are accepted")
+		}
+		if err := s.verify(bctx, tx); err != nil {
+			if errors.Is(err, errVerifyBusy) {
+				return "", http.StatusServiceUnavailable, newP2PError("ERR_VERIFY_UNAVAILABLE", "could not verify the transaction; safe to retry")
+			}
 			if errors.Is(err, p2p.ErrInvalidProof) {
 				return "", http.StatusBadRequest, newP2PError("ERR_INVALID_PROOF", "transaction or its parents failed SPV verification")
 			}
@@ -234,4 +248,25 @@ func (s *Server) pushPayment(ctx context.Context, recipient, messageID string) {
 	go firebase.SendFCMNotification(ctx, s.Store, recipient, firebase.FCMPayload{
 		Title: title, MessageID: messageID, Recipient: recipient, MessageBox: paymentInboxBox,
 	})
+}
+
+// errVerifyBusy means every verify slot is taken.
+var errVerifyBusy = errors.New("p2p verify slots full")
+
+// verify runs the Verifier in one of the process-wide slots, under its own
+// deadline. It does not wait for a slot: a full set answers errVerifyBusy at
+// once, so a flood of costly payments cannot queue up memory. The slot is held
+// only for Verify, and it is given back only when Verify returns, so the cap
+// holds even when one opcode runs past the deadline.
+func (s *Server) verify(ctx context.Context, tx *transaction.Transaction) error {
+	select {
+	case s.verifySlots <- struct{}{}:
+	default:
+		logger.Warn("p2p verify slots full")
+		return errVerifyBusy
+	}
+	defer func() { <-s.verifySlots }()
+	vctx, cancel := context.WithTimeout(ctx, p2pVerifyTimeout)
+	defer cancel()
+	return s.p2p.Verifier.Verify(vctx, tx)
 }

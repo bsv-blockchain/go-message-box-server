@@ -118,6 +118,8 @@ func mountP2P(cfg *config.Config, srv *handlers.Server, w *p2pWiring) http.Handl
 		Broadcaster:    w.Broadcaster,
 		Verifier:       w.Verifier,
 		Parents:        w.Parents,
+
+		VerifyConcurrency: cfg.P2PVerifyConcurrency,
 	}, w.Store)
 	return handlers.NewRateLimiter(cfg.P2PRatePerMin, cfg.TrustProxy, cfg.TrustedProxyHops, cfg.ClientIPHeader).Wrap(srv.P2PRoutes())
 }

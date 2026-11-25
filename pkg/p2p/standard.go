@@ -44,7 +44,7 @@ func CheckStandardSpends(tx *transaction.Transaction) error {
 				continue // spv.Verify refuses this as a source mismatch
 			}
 			lock := src.Outputs[in.SourceTxOutIndex].LockingScript
-			if lock == nil || !(lock.IsP2PKH() || lock.IsP2PK()) {
+			if lock == nil || (!lock.IsP2PKH() && !lock.IsP2PK()) {
 				return fmt.Errorf("%w: input %d of %s spends a non-standard output", ErrNonStandard, vin, t.TxID())
 			}
 			if !pushOnly(in.UnlockingScript) {
