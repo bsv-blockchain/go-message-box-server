@@ -123,7 +123,7 @@ func TestArcadeServerErrorIsNotRejection(t *testing.T) {
 }
 
 func TestArcadeTimeoutIsNotRejection(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 	}))
 	defer srv.Close()

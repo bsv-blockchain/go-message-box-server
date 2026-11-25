@@ -251,7 +251,7 @@ func RunP2PDestinationTests(t *testing.T, newStore NewP2PDestinationStoreFunc) {
 		}
 		// Twice, and a second txid: each is recorded once.
 		for _, tx := range []string{tx1, tx1, tx2} {
-			if err := s.MarkDestinationDelivered(ctx, ref, tx); err != nil {
+			if err = s.MarkDestinationDelivered(ctx, ref, tx); err != nil {
 				t.Fatal(err)
 			}
 		}

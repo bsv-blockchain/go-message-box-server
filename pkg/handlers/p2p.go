@@ -163,11 +163,11 @@ func (s *Server) PaymailPublicProfile(w http.ResponseWriter, r *http.Request) {
 // amount, so anything larger is not a paymail sender.
 const maxDestinationBody = 4 << 10
 
-// parseSatoshis reads the amount strictly: a JSON integer from 1 to max. A
+// parseSatoshis reads the amount strictly: a JSON integer from 1 to limit. A
 // string, a fraction, an exponent, a sign or an overflow is refused, because
 // a sloppy parse here would let a sender pick an amount we did not mean to
 // allow.
-func parseSatoshis(raw json.RawMessage, max uint64) (uint64, bool) {
+func parseSatoshis(raw json.RawMessage, limit uint64) (uint64, bool) {
 	if len(raw) == 0 {
 		return 0, false
 	}
@@ -177,7 +177,7 @@ func parseSatoshis(raw json.RawMessage, max uint64) (uint64, bool) {
 		}
 	}
 	n, err := strconv.ParseUint(string(raw), 10, 64)
-	if err != nil || n == 0 || n > max {
+	if err != nil || n == 0 || n > limit {
 		return 0, false
 	}
 	return n, true
@@ -206,7 +206,7 @@ func (s *Server) PaymailP2PDestination(w http.ResponseWriter, r *http.Request) {
 		Satoshis json.RawMessage `json:"satoshis"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDestinationBody))
-	if err := dec.Decode(&body); err != nil {
+	if err = dec.Decode(&body); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
 			writeError(w, http.StatusRequestEntityTooLarge, "ERR_BODY_TOO_LARGE", "request body too large")
@@ -457,7 +457,6 @@ func (s *Server) PaymailReceiveTransaction(w http.ResponseWriter, r *http.Reques
 		id := in.SourceTXID.String()
 		parent, ok := fetched[id]
 		if !ok {
-			var err error
 			if parent, err = s.p2p.Parents.Parent(fctx, id); err != nil {
 				if errors.Is(err, p2p.ErrBudgetExceeded) {
 					writeError(w, http.StatusBadRequest, "ERR_TOO_MANY_INPUTS", "the inputs' ancestry is too large to verify here; send BEEF instead")

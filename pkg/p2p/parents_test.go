@@ -97,20 +97,20 @@ func TestWhatsOnChainDepthLimit(t *testing.T) {
 }
 
 func TestWhatsOnChainNotFound(t *testing.T) {
-	w, _ := wocFake(t, func(rw http.ResponseWriter, r *http.Request) { rw.WriteHeader(404) })
+	w, _ := wocFake(t, func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(404) })
 	_, err := w.Parent(context.Background(), minedTxid)
 	require.ErrorIs(t, err, ErrParentNotFound)
 }
 
 func TestWhatsOnChainServerError(t *testing.T) {
-	w, _ := wocFake(t, func(rw http.ResponseWriter, r *http.Request) { rw.WriteHeader(502) })
+	w, _ := wocFake(t, func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(502) })
 	_, err := w.Parent(context.Background(), minedTxid)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrParentNotFound)
 }
 
 func TestWhatsOnChainRateLimit(t *testing.T) {
-	w, _ := wocFake(t, func(rw http.ResponseWriter, r *http.Request) {
+	w, _ := wocFake(t, func(rw http.ResponseWriter, _ *http.Request) {
 		_, _ = rw.Write([]byte(minedBeefHex(t)))
 	})
 	w.interval = 60 * time.Millisecond
@@ -194,7 +194,7 @@ func TestWhatsOnChainByteBudget(t *testing.T) {
 // The budget is shared by every Parent call of one request, so many distinct
 // parents cannot each get a fresh allowance.
 func TestWhatsOnChainBudgetSpansCalls(t *testing.T) {
-	w, _ := wocFake(t, func(rw http.ResponseWriter, r *http.Request) { _, _ = rw.Write([]byte(minedBeefHex(t))) })
+	w, _ := wocFake(t, func(rw http.ResponseWriter, _ *http.Request) { _, _ = rw.Write([]byte(minedBeefHex(t))) })
 	ctx := WithBudget(context.Background(), NewBudget(2, 1<<20))
 	for _, id := range []string{"01", "02"} {
 		_, err := w.Parent(ctx, id+minedTxid[2:])

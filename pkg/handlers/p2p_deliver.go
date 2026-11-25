@@ -53,7 +53,6 @@ func findPayingTx(beef *transaction.Beef, dest *storage.P2PDestination) (*transa
 		if matchOutput(btx.Transaction, dest) < 0 {
 			continue
 		}
-		id := id
 		found = beef.FindAtomicTransactionByHash(&id)
 		n++
 	}

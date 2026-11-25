@@ -144,7 +144,8 @@ func (w *whatsOnChain) fetch(ctx context.Context, txid string, depth int) (*tran
 	}
 	switch {
 	case status == http.StatusOK:
-		tx, err := transaction.NewTransactionFromBEEFHex(strings.TrimSpace(string(body)))
+		var tx *transaction.Transaction
+		tx, err = transaction.NewTransactionFromBEEFHex(strings.TrimSpace(string(body)))
 		if err != nil {
 			return nil, fmt.Errorf("parse beef for %s: %w", txid, err)
 		}

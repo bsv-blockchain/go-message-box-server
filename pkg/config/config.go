@@ -235,7 +235,7 @@ func loadP2P(cfg *Config) error {
 		// The API key travels in a header, so plain http is for loopback only.
 		host := u.Hostname()
 		local := host == "localhost" || host == "127.0.0.1" || host == "::1"
-		if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		if u.Scheme != "https" && (u.Scheme != "http" || !local) {
 			return fmt.Errorf("BROADCASTER_URL must be https (http only for localhost), got %q", cfg.BroadcasterURL)
 		}
 	}

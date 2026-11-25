@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -181,14 +182,16 @@ func (e *p2pEnv) issue(handle string, sats uint64) issued {
 	return issued{ref: r.Reference, script: r.Outputs[0].Script, sats: sats}
 }
 
-func itoa(n uint64) string { b, _ := json.Marshal(n); return string(b) }
+func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
 
-func beefBody(beef, ref string, meta map[string]string) string {
+func beefBody(t *testing.T, beef, ref string, meta map[string]string) string {
+	t.Helper()
 	m := map[string]any{"beef": beef, "reference": ref}
 	if meta != nil {
 		m["metadata"] = meta
 	}
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -217,7 +220,7 @@ func decodeToken(t *testing.T, body string) p2p.Token {
 func tokenBytes(tok p2p.Token) []byte {
 	b := make([]byte, len(tok.Transaction))
 	for i, v := range tok.Transaction {
-		b[i] = byte(v)
+		b[i] = byte(v & 0xff)
 	}
 	return b
 }
@@ -235,7 +238,7 @@ func TestP2PBeefAcceptsEveryFormat(t *testing.T) {
 			d := e.issue("rosa", 1000)
 			pay := newPayment(t, d.script, d.sats)
 
-			w := e.post(beefPath, beefBody(form(pay, t), d.ref, nil))
+			w := e.post(beefPath, beefBody(t, form(pay, t), d.ref, nil))
 			require.Equal(t, 200, w.Code, w.Body.String())
 			txid := pay.child.TxID().String()
 			assert.JSONEq(t, `{"txid":"`+txid+`","note":""}`, w.Body.String())
@@ -266,7 +269,7 @@ func TestP2PBeefMetadata(t *testing.T) {
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, map[string]string{"note": "hi", "sender": "x@handcash.io"}))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, map[string]string{"note": "hi", "sender": "x@handcash.io"}))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	tok := decodeToken(t, e.inbox(idKey)[0].Body)
 	assert.Equal(t, "hi", tok.Note)
@@ -282,7 +285,7 @@ func TestP2PBeefNoMatchingOutput(t *testing.T) {
 		"wrong script": newPayment(t, other.script, 1000),
 		"wrong amount": newPayment(t, d.script, 999),
 	} {
-		w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+		w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 		assert.Equal(t, 400, w.Code, name)
 		assert.Contains(t, w.Body.String(), "ERR_NO_MATCHING_OUTPUT", name)
 	}
@@ -300,11 +303,11 @@ func TestP2PBeefReference(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 
-	w := e.post(beefPath, beefBody(pay.v1(t), "00000000000000000000000000000000", nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), "00000000000000000000000000000000", nil))
 	assert.Equal(t, 404, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_UNKNOWN_REFERENCE")
 
-	w = e.post("/api/bsvalias/beef/bob@example.com", beefBody(pay.v1(t), d.ref, nil))
+	w = e.post("/api/bsvalias/beef/bob@example.com", beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_REFERENCE_MISMATCH")
 	assert.Empty(t, e.bc.seen)
@@ -316,7 +319,7 @@ func TestP2PBeefRejected(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 	e.bc.err = joinRejected("script failed")
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_REJECTED")
 	// The upstream text is the broadcaster's own wording, not ours to relay to
@@ -338,7 +341,7 @@ func TestP2PBeefForgedParent(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 	e.vf.err = errors.Join(p2p.ErrInvalidProof, errors.New("bad merkle path"))
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_INVALID_PROOF")
 	assert.Zero(t, e.bc.calls)
@@ -352,7 +355,7 @@ func TestP2PBeefVerifierDown(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 	e.vf.err = errors.New("woc down")
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 503, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_VERIFY_UNAVAILABLE")
 	assert.Zero(t, e.bc.calls)
@@ -364,7 +367,7 @@ func TestP2PBeefBroadcasterDown(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 	e.bc.err = errors.New("arcade 502")
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 503, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_BROADCAST_UNAVAILABLE")
 	assert.Empty(t, e.inbox(idKey))
@@ -395,7 +398,7 @@ func TestP2PBeefBroadcastFailureSayingAlreadyKnown(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		e.srv.p2p.Broadcaster = p2p.NewArcade(srv.URL, "", srv.Client())
-		w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+		w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 		srv.Close()
 		assert.Equal(t, tc.code, w.Code, tc.name)
 		assert.Contains(t, w.Body.String(), tc.errTag, tc.name)
@@ -410,7 +413,7 @@ func TestP2PBeefPayingTxNotLast(t *testing.T) {
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
-	w := e.post(beefPath, beefBody(pay.withGrandchild(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.withGrandchild(t), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	assert.Equal(t, []string{pay.child.TxID().String()}, e.bc.seen)
 	assert.Len(t, e.inbox(idKey), 1)
@@ -422,7 +425,7 @@ func TestP2PBeefReplay(t *testing.T) {
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
-	body := beefBody(pay.v1(t), d.ref, nil)
+	body := beefBody(t, pay.v1(t), d.ref, nil)
 	a := e.post(beefPath, body)
 	b := e.post(beefPath, body)
 	require.Equal(t, 200, a.Code, a.Body.String())
@@ -438,9 +441,9 @@ func TestP2PBeefSecondTransactionDelivered(t *testing.T) {
 	e := newP2PEnv(t, true)
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
-	require.Equal(t, 200, e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
+	require.Equal(t, 200, e.post(beefPath, beefBody(t, newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
 	second := newPayment(t, d.script, d.sats)
-	w := e.post(beefPath, beefBody(second.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, second.v1(t), d.ref, nil))
 	assert.Equal(t, 200, w.Code, w.Body.String())
 	assert.Equal(t, 2, e.bc.calls)
 	assert.Len(t, e.inbox(idKey), 2)
@@ -455,10 +458,10 @@ func TestP2PBeefSecondPaymentExtendsRetention(t *testing.T) {
 	now := e.now
 	e.srv.now = func() time.Time { return now }
 	d := e.issue("rosa", 1000)
-	require.Equal(t, 200, e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
+	require.Equal(t, 200, e.post(beefPath, beefBody(t, newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
 
 	now = now.Add(29 * 24 * time.Hour)
-	w := e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	stored, err := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, now)
 	require.NoError(t, err)
@@ -478,7 +481,7 @@ func TestP2PBeefExtendFailureDoesNotBroadcast(t *testing.T) {
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	e.srv.destinations = extendFailStore{e.srv.Store.(*fakeStore)}
-	w := e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
 	assert.Equal(t, 500, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), "ERR_INTERNAL")
 	assert.Zero(t, e.bc.calls)
@@ -496,7 +499,7 @@ func TestP2PBeefRaceLoserRetryDelivers(t *testing.T) {
 	fs := e.srv.Store.(*fakeStore)
 	require.NoError(t, fs.MarkDestinationUsed(t.Context(), d.ref, winner.child.TxID().String(), e.now))
 
-	w := e.post(beefPath, beefBody(loser.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, loser.v1(t), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)
@@ -510,7 +513,7 @@ func TestP2PBeefRaceOnMarkUsed(t *testing.T) {
 	pay := newPayment(t, d.script, d.sats)
 	// Another transaction lands between our check and our mark.
 	e.srv.destinations = &racingStore{fakeStore: e.srv.Store.(*fakeStore)}
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)
@@ -542,7 +545,7 @@ func TestP2PBeefReleasedHandleStillPaysFirstOwner(t *testing.T) {
 	other := e.register("rosa2")
 	require.NotEqual(t, idKey, other)
 
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	assert.Len(t, e.inbox(idKey), 1)
 	assert.Empty(t, e.inbox(other))
@@ -558,7 +561,7 @@ func TestP2PBeefInvalid(t *testing.T) {
 		"not a beef": "deadbeef",
 		"no subject": emptyBeefHex(t),
 	} {
-		w := e.post(beefPath, beefBody(beef, d.ref, nil))
+		w := e.post(beefPath, beefBody(t, beef, d.ref, nil))
 		assert.Equal(t, 400, w.Code, name)
 		assert.Contains(t, w.Body.String(), "ERR_INVALID_BEEF", name)
 	}
@@ -609,8 +612,8 @@ func TestP2PBeefOneTxTwoDestinations(t *testing.T) {
 	pay := twoOutputPayment(t, da, db)
 	beef := pay.v1(t)
 
-	require.Equal(t, 200, e.post(beefPath, beefBody(beef, da.ref, nil)).Code)
-	require.Equal(t, 200, e.post("/api/bsvalias/beef/bob@example.com", beefBody(beef, db.ref, nil)).Code)
+	require.Equal(t, 200, e.post(beefPath, beefBody(t, beef, da.ref, nil)).Code)
+	require.Equal(t, 200, e.post("/api/bsvalias/beef/bob@example.com", beefBody(t, beef, db.ref, nil)).Code)
 
 	require.Len(t, e.inbox(rosa), 1)
 	require.Len(t, e.inbox(bob), 1, "the second destination must be delivered, not taken for a replay")
@@ -639,7 +642,7 @@ func TestP2PBeefIDHeldByForeignMessage(t *testing.T) {
 		MessageID: p2pMessageID(d.ref, pay.child.TxID().String()), Recipient: idKey,
 		MessageBox: "payment_inbox", Sender: testKey(t).PubKey().ToDERHex(), Body: "forged",
 	}))
-	w := e.post(beefPath, beefBody(pay.v1(t), d.ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), d.ref, nil))
 	assert.Equal(t, 500, w.Code, w.Body.String())
 }
 
@@ -651,7 +654,7 @@ func TestP2PBeefReplayAfterAcknowledge(t *testing.T) {
 	idKey := e.register("rosa")
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
-	body := beefBody(pay.v1(t), d.ref, nil)
+	body := beefBody(t, pay.v1(t), d.ref, nil)
 	require.Equal(t, 200, e.post(beefPath, body).Code)
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)

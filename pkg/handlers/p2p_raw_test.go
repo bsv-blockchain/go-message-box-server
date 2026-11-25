@@ -50,12 +50,14 @@ func (f *fakeParents) Parent(_ context.Context, txid string) (*transaction.Trans
 
 const rawPath = "/api/bsvalias/receive-transaction/rosa@example.com"
 
-func rawBody(hex, ref string, meta map[string]string) string {
+func rawBody(t *testing.T, hex, ref string, meta map[string]string) string {
+	t.Helper()
 	m := map[string]any{"hex": hex, "reference": ref}
 	if meta != nil {
 		m["metadata"] = meta
 	}
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -73,7 +75,7 @@ func TestP2PRawAcceptsParentFromFetcher(t *testing.T) {
 	parents := newFakeParents(pay.parent)
 	e.srv.p2p.Parents = parents
 
-	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, map[string]string{"note": "hi"}))
+	w := e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, map[string]string{"note": "hi"}))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	txid := pay.child.TxID().String()
 	assert.JSONEq(t, `{"txid":"`+txid+`","note":""}`, w.Body.String())
@@ -118,7 +120,7 @@ func TestP2PRawTwoInputsOneParentFetchedOnce(t *testing.T) {
 
 	parents := newFakeParents(parent)
 	e.srv.p2p.Parents = parents
-	w := e.post(rawPath, rawBody(rawHex(child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(child), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	assert.Equal(t, 1, parents.calls[parent.TxID().String()])
 }
@@ -158,7 +160,7 @@ func TestP2PRawUnminedParent(t *testing.T) {
 	served.Inputs[0].SourceTransaction = gp
 	e.srv.p2p.Parents = newFakeParents(served)
 
-	w := e.post(rawPath, rawBody(rawHex(child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(child), d.ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	msgs := e.inbox(idKey)
 	require.Len(t, msgs, 1)
@@ -176,7 +178,7 @@ func TestP2PRawParentUnavailable(t *testing.T) {
 	parents.err = errors.New("woc down")
 	e.srv.p2p.Parents = parents
 
-	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, nil))
 	assert.Equal(t, 503, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_PARENT_UNAVAILABLE")
 	assert.Empty(t, e.bc.seen)
@@ -190,7 +192,7 @@ func TestP2PRawInvalidHex(t *testing.T) {
 	e.register("rosa")
 	d := e.issue("rosa", 1000)
 	for _, h := range []string{"", "zz", "00"} {
-		w := e.post(rawPath, rawBody(h, d.ref, nil))
+		w := e.post(rawPath, rawBody(t, h, d.ref, nil))
 		assert.Equal(t, 400, w.Code, h)
 		assert.Contains(t, w.Body.String(), "ERR_INVALID_TX", h)
 	}
@@ -205,7 +207,7 @@ func TestP2PRawDestinationMismatch(t *testing.T) {
 	parents := newFakeParents(pay.parent)
 	e.srv.p2p.Parents = parents
 
-	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_NO_MATCHING_OUTPUT")
 	assert.Empty(t, e.bc.seen)
@@ -219,7 +221,7 @@ func TestP2PRawParentNotFoundIsClientError(t *testing.T) {
 	pay := newPayment(t, d.script, d.sats)
 	e.srv.p2p.Parents = newFakeParents() // knows no parent
 
-	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_INVALID_TX")
 	assert.Empty(t, e.bc.seen)
@@ -242,7 +244,7 @@ func TestP2PRawTooManyInputs(t *testing.T) {
 	parents := newFakeParents(pay.parent)
 	e.srv.p2p.Parents = parents
 
-	w := e.post(rawPath, rawBody(child.Hex(), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, child.Hex(), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
 	assert.Empty(t, parents.calls, "no parent is fetched past the cap")
@@ -290,7 +292,7 @@ func TestP2PRawParentCapIsSmall(t *testing.T) {
 	e.srv.p2p.Parents = parents
 
 	// One real parent plus 10 more is 11 distinct: over the cap of 10.
-	w := e.post(rawPath, rawBody(rawWithInputs(t, pay, 10, true), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawWithInputs(t, pay, 10, true), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
 	assert.Empty(t, parents.calls)
@@ -306,7 +308,7 @@ func TestP2PRawInputCap(t *testing.T) {
 	parents := newFakeParents(pay.parent)
 	e.srv.p2p.Parents = parents
 
-	w := e.post(rawPath, rawBody(rawWithInputs(t, pay, 100, false), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawWithInputs(t, pay, 100, false), d.ref, nil))
 	assert.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
 	assert.Empty(t, parents.calls)
@@ -319,7 +321,7 @@ func TestP2PRawFetchHasDeadline(t *testing.T) {
 	pay := newPayment(t, d.script, d.sats)
 	cp := &ctxParents{err: errors.New("woc down")}
 	e.srv.p2p.Parents = cp
-	e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, nil))
 	assert.True(t, cp.hasDeadline, "an unauthenticated call must not hold a fetch open without a time limit")
 }
 
@@ -331,7 +333,7 @@ func TestP2PRawBudgetExceededIsClientError(t *testing.T) {
 	d := e.issue("rosa", 1000)
 	pay := newPayment(t, d.script, d.sats)
 	e.srv.p2p.Parents = &ctxParents{err: p2p.ErrBudgetExceeded}
-	w := e.post(rawPath, rawBody(rawHex(pay.child), d.ref, nil))
+	w := e.post(rawPath, rawBody(t, rawHex(pay.child), d.ref, nil))
 	assert.Equal(t, 400, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), "ERR_TOO_MANY_INPUTS")
 }

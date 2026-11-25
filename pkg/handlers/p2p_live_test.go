@@ -46,7 +46,7 @@ func TestP2PBeefLivePushIsTheToken(t *testing.T) {
 		CreatedAt: e.now, AcceptUntil: e.now.Add(time.Hour), PurgeAt: e.now.Add(time.Hour),
 	}))
 	pay := newPayment(t, derived.Script, 1000)
-	w := e.post(beefPath, beefBody(pay.v1(t), ref, nil))
+	w := e.post(beefPath, beefBody(t, pay.v1(t), ref, nil))
 	require.Equal(t, 200, w.Code, w.Body.String())
 
 	push := alice.expect("sendMessage-" + room)
