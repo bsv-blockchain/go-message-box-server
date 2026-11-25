@@ -196,3 +196,36 @@ func TestP2PVerifyDeadline(t *testing.T) {
 }
 
 var _ storage.P2PDestinationStore = (*extendCounter)(nil)
+
+// The review's bypass: a BEEF V1 holding one Extended Format transaction whose
+// input carries a costly output itself, with a made-up parent txid and no
+// ancestry. spv.Verify would run that output's script.
+func TestP2PBeefExtendedFormatNonStandardRefused(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	c := countExtends(e)
+
+	heavy := &script.Script{}
+	require.NoError(t, heavy.AppendPushData([]byte{1}))
+	require.NoError(t, heavy.AppendPushData([]byte{0x00, 0x12, 0x7a}))
+	require.NoError(t, heavy.AppendOpcodes(script.OpNUM2BIN, script.OpINVERT, script.OpDUP, script.OpDUP, script.OpMUL, script.OpDROP))
+	root := transaction.NewTransaction()
+	in := &transaction.TransactionInput{SourceTxOutIndex: 0, UnlockingScript: &script.Script{}}
+	in.SourceTXID = root.TxID() // any 32 bytes: no parent is in the BEEF
+	in.SetSourceTxOutput(&transaction.TransactionOutput{Satoshis: d.sats + 500, LockingScript: heavy})
+	root.AddInput(in)
+	dest, err := script.NewFromHex(d.script)
+	require.NoError(t, err)
+	root.AddOutput(&transaction.TransactionOutput{Satoshis: d.sats, LockingScript: dest})
+	ef, err := root.EF()
+	require.NoError(t, err)
+	// BEEF V1: version, no BUMPs, one transaction, no BUMP index.
+	beef := append([]byte{0x01, 0x00, 0xbe, 0xef, 0x00, 0x01}, ef...)
+	beef = append(beef, 0x00)
+
+	w := e.post(beefPath, beefBody(t, hex.EncodeToString(beef), d.ref, nil))
+	assert.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "ERR_NONSTANDARD")
+	assertNothingSettled(t, e, c, d.ref, idKey)
+}

@@ -23,8 +23,9 @@ var ErrNonStandard = errors.New("non-standard spend in unmined ancestry")
 // P2PKH, so this check runs first and costs real payments nothing.
 //
 // A mined transaction is not walked: spv.Verify checks its merkle path and
-// does not run its scripts. An input with no source transaction is left to
-// spv.Verify, which refuses it as an invalid proof.
+// does not run its scripts. An input's spent output is the parent's output or,
+// for an Extended Format input with no parent, the output it carries; both are
+// checked. An input with neither is left to spv.Verify, which refuses it.
 func CheckStandardSpends(tx *transaction.Transaction) error {
 	seen := map[*transaction.Transaction]bool{}
 	queue := []*transaction.Transaction{tx}
@@ -36,21 +37,21 @@ func CheckStandardSpends(tx *transaction.Transaction) error {
 		}
 		seen[t] = true
 		for vin, in := range t.Inputs {
-			src := in.SourceTransaction
-			if src == nil {
-				continue
+			// SourceTxOutput is what spv.Verify runs the unlock against: the
+			// parent's output, or for an Extended Format input with no parent,
+			// the output the input carries itself.
+			out := in.SourceTxOutput()
+			if out == nil {
+				continue // nothing to run: spv.Verify refuses a missing source
 			}
-			if int(in.SourceTxOutIndex) >= len(src.Outputs) {
-				continue // spv.Verify refuses this as a source mismatch
-			}
-			lock := src.Outputs[in.SourceTxOutIndex].LockingScript
+			lock := out.LockingScript
 			if lock == nil || (!lock.IsP2PKH() && !lock.IsP2PK()) {
 				return fmt.Errorf("%w: input %d of %s spends a non-standard output", ErrNonStandard, vin, t.TxID())
 			}
 			if !pushOnly(in.UnlockingScript) {
 				return fmt.Errorf("%w: input %d of %s has an unlocking script that is not push-only", ErrNonStandard, vin, t.TxID())
 			}
-			queue = append(queue, src)
+			queue = append(queue, in.SourceTransaction)
 		}
 	}
 	return nil

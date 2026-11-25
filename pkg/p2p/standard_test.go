@@ -120,3 +120,20 @@ func TestStandardSpendsLeavesMissingSourceToSPV(t *testing.T) {
 	child.AddInput(&transaction.TransactionInput{SourceTxOutIndex: 0, UnlockingScript: &script.Script{}})
 	require.NoError(t, CheckStandardSpends(child))
 }
+
+// An Extended Format input carries its spent output itself, with no parent.
+// spv.Verify runs that output's script, so it must be standard too.
+func TestStandardSpendsChecksExtendedFormatOutput(t *testing.T) {
+	child := transaction.NewTransaction()
+	in := &transaction.TransactionInput{SourceTXID: transaction.NewTransaction().TxID(), UnlockingScript: &script.Script{}}
+	in.SetSourceTxOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: expensiveLock(t)})
+	child.AddInput(in)
+	require.ErrorIs(t, CheckStandardSpends(child), ErrNonStandard)
+
+	_, lock := p2pkhKey(t)
+	ok := transaction.NewTransaction()
+	in2 := &transaction.TransactionInput{SourceTXID: transaction.NewTransaction().TxID(), UnlockingScript: pushes(t, make([]byte, 71), make([]byte, 33))}
+	in2.SetSourceTxOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: lock})
+	ok.AddInput(in2)
+	require.NoError(t, CheckStandardSpends(ok))
+}
