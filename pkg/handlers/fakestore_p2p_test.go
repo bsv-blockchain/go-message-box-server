@@ -69,6 +69,19 @@ func (f *fakeStore) MarkDestinationUsed(_ context.Context, reference, txid strin
 	return storage.ErrDestinationUsed
 }
 
+func (f *fakeStore) ExtendDestinationRetention(_ context.Context, reference string, until time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.p2p[reference]
+	if d == nil {
+		return storage.ErrDestinationNotFound
+	}
+	if until.After(d.PurgeAt) {
+		d.PurgeAt = until
+	}
+	return nil
+}
+
 var _ storage.P2PDestinationStore = (*fakeStore)(nil)
 
 // The fake must keep the contract the real backend does, or the handler tests

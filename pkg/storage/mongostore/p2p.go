@@ -97,6 +97,19 @@ func (s *Store) MarkDestinationUsed(ctx context.Context, reference, txid string,
 	return storage.ErrDestinationUsed
 }
 
+// ExtendDestinationRetention implements storage.P2PDestinationStore.
+func (s *Store) ExtendDestinationRetention(ctx context.Context, reference string, until time.Time) error {
+	res, err := s.db.Collection(p2pDestinationsColl).UpdateOne(ctx,
+		bson.M{fieldID: reference}, bson.M{"$max": bson.M{"purgeAt": msUTC(until)}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return storage.ErrDestinationNotFound
+	}
+	return nil
+}
+
 // MarkDestinationDelivered implements storage.P2PDestinationStore.
 func (s *Store) MarkDestinationDelivered(ctx context.Context, reference, txid string) error {
 	res, err := s.db.Collection(p2pDestinationsColl).UpdateOne(ctx,

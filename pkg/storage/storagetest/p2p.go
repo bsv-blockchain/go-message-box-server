@@ -180,6 +180,66 @@ func RunP2PDestinationTests(t *testing.T, newStore NewP2PDestinationStoreFunc) {
 		}
 	})
 
+	t.Run("ExtendRetention", func(t *testing.T) {
+		s := newStore(t)
+		d := p2pDest(ref)
+		if err := s.CreateDestination(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		purgeAt := func() time.Time {
+			got, err := s.GetDestination(ctx, ref, p2pT0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return got.PurgeAt.Truncate(time.Millisecond)
+		}
+		// Extends.
+		later := d.PurgeAt.Add(10 * 24 * time.Hour)
+		if err := s.ExtendDestinationRetention(ctx, ref, later); err != nil {
+			t.Fatal(err)
+		}
+		if got := purgeAt(); !got.Equal(later) {
+			t.Fatalf("PurgeAt = %v, want %v", got, later)
+		}
+		// Never shortens.
+		if err := s.ExtendDestinationRetention(ctx, ref, later.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if got := purgeAt(); !got.Equal(later) {
+			t.Fatalf("PurgeAt = %v after a shorter extend, want %v", got, later)
+		}
+	})
+
+	t.Run("ExtendRetentionAfterOtherTxid", func(t *testing.T) {
+		// The case it exists for: a second payment on a used destination.
+		s := newStore(t)
+		if err := s.CreateDestination(ctx, p2pDest(ref)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkDestinationUsed(ctx, ref, tx1, p2pT0); err != nil {
+			t.Fatal(err)
+		}
+		day29 := p2pT0.Add(29 * 24 * time.Hour)
+		if err := s.MarkDestinationUsed(ctx, ref, tx2, day29); !errors.Is(err, storage.ErrDestinationUsed) {
+			t.Fatalf("err = %v, want ErrDestinationUsed", err)
+		}
+		want := day29.Add(storage.P2PDestinationRetention)
+		if err := s.ExtendDestinationRetention(ctx, ref, want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetDestination(ctx, ref, day29)
+		if err != nil || !got.PurgeAt.Truncate(time.Millisecond).Equal(want.Truncate(time.Millisecond)) {
+			t.Fatalf("got %+v, %v; want PurgeAt %v", got, err, want)
+		}
+	})
+
+	t.Run("ExtendRetentionUnknown", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.ExtendDestinationRetention(ctx, "nope", p2pT0); !errors.Is(err, storage.ErrDestinationNotFound) {
+			t.Fatalf("err = %v, want ErrDestinationNotFound", err)
+		}
+	})
+
 	t.Run("MarkDelivered", func(t *testing.T) {
 		s := newStore(t)
 		if err := s.CreateDestination(ctx, p2pDest(ref)); err != nil {

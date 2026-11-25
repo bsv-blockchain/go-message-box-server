@@ -234,6 +234,10 @@ func (emptyDestinations) MarkDestinationUsed(context.Context, string, string, ti
 	return nil
 }
 
+func (emptyDestinations) ExtendDestinationRetention(context.Context, string, time.Time) error {
+	return nil
+}
+
 func (emptyDestinations) MarkDestinationDelivered(context.Context, string, string) error {
 	return nil
 }

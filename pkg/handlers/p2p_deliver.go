@@ -113,6 +113,14 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 			logger.Error("p2p verify unavailable", "error", err)
 			return "", http.StatusServiceUnavailable, newP2PError("ERR_VERIFY_UNAVAILABLE", "could not verify the transaction; safe to retry")
 		}
+		// Every accepted txid gets a full recovery window, the first one and a
+		// later one alike. Without it a crash between the broadcast and the
+		// inbox insert for a second payment would leave the record to expire
+		// with the first. Not extended, not broadcast.
+		if err := s.destinations.ExtendDestinationRetention(ctx, dest.Reference, s.clock().Add(storage.P2PDestinationRetention)); err != nil {
+			logger.Error("p2p extend retention failed", "error", err)
+			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
+		}
 		if _, err := s.p2p.Broadcaster.Broadcast(ctx, tx); err != nil {
 			if errors.Is(err, p2p.ErrRejected) {
 				// The broadcaster's description stays in our log: relayed, it

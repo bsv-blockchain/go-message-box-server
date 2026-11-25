@@ -446,6 +446,45 @@ func TestP2PBeefSecondTransactionDelivered(t *testing.T) {
 	assert.Len(t, e.inbox(idKey), 2)
 }
 
+// Every accepted txid gets a full recovery window, not only the first: a
+// crash between broadcast and inbox insert for a late second payment must not
+// lose the derivation values.
+func TestP2PBeefSecondPaymentExtendsRetention(t *testing.T) {
+	e := newP2PEnv(t, true)
+	e.register("rosa")
+	now := e.now
+	e.srv.now = func() time.Time { return now }
+	d := e.issue("rosa", 1000)
+	require.Equal(t, 200, e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil)).Code)
+
+	now = now.Add(29 * 24 * time.Hour)
+	w := e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	stored, err := e.srv.Store.(*fakeStore).GetDestination(t.Context(), d.ref, now)
+	require.NoError(t, err)
+	assert.False(t, stored.PurgeAt.Before(now.Add(storage.P2PDestinationRetention)), "PurgeAt %v", stored.PurgeAt)
+}
+
+type extendFailStore struct{ *fakeStore }
+
+func (extendFailStore) ExtendDestinationRetention(context.Context, string, time.Time) error {
+	return errors.New("mongo down")
+}
+
+// If the retention cannot be extended, nothing is broadcast: a payment we
+// could not recover must not reach the network through us.
+func TestP2PBeefExtendFailureDoesNotBroadcast(t *testing.T) {
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	e.srv.destinations = extendFailStore{e.srv.Store.(*fakeStore)}
+	w := e.post(beefPath, beefBody(newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
+	assert.Equal(t, 500, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "ERR_INTERNAL")
+	assert.Zero(t, e.bc.calls)
+	assert.Empty(t, e.inbox(idKey))
+}
+
 // The race loser's mark fails by design. If its delivery then fails, the
 // retry must still deliver it although the mark names the winner.
 func TestP2PBeefRaceLoserRetryDelivers(t *testing.T) {
