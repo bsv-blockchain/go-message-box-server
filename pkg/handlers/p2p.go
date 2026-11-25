@@ -298,12 +298,32 @@ func (s *Server) aliasFor(paymail string) (string, bool) {
 	return paymail[:i], true
 }
 
+// validReference reports whether ref has the shape of an issued reference.
+func validReference(ref string) bool {
+	if len(ref) != 32 {
+		return false
+	}
+	for i := 0; i < len(ref); i++ {
+		c := ref[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // destinationFor loads and checks the destination a payment refers to, writing
 // the error response itself when it cannot.
 func (s *Server) destinationFor(w http.ResponseWriter, r *http.Request, paymail, reference string) *storage.P2PDestination {
 	alias, ok := s.aliasFor(paymail)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "ERR_INVALID_PAYMAIL", "expected alias@"+s.lookup.Domain)
+		return nil
+	}
+	// Issued references are 32 lowercase hex characters. Anything else cannot
+	// exist, so it never reaches the store.
+	if !validReference(reference) {
+		writeError(w, http.StatusNotFound, "ERR_UNKNOWN_REFERENCE", "unknown or expired reference")
 		return nil
 	}
 	dest, err := s.destinations.GetDestination(r.Context(), reference, s.clock())
