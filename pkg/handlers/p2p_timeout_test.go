@@ -64,3 +64,27 @@ func TestP2PSettleVerifyTimeout(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ERR_VERIFY_UNAVAILABLE")
 	assert.Zero(t, e.bc.calls)
 }
+
+// blockingExtendStore holds the retention extend until its context ends.
+type blockingExtendStore struct{ *fakeStore }
+
+func (blockingExtendStore) ExtendDestinationRetention(ctx context.Context, _ string, _ time.Time) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A settle deadline that ends during the extend is a timeout, not a storage
+// fault, so the sender gets the same retryable 503 as the other steps.
+func TestP2PSettleExtendTimeout(t *testing.T) {
+	shortenSettleTimeout(t)
+	e := newP2PEnv(t, true)
+	idKey := e.register("rosa")
+	d := e.issue("rosa", 1000)
+	e.srv.destinations = blockingExtendStore{e.srv.Store.(*fakeStore)}
+
+	w := e.post(beefPath, beefBody(t, newPayment(t, d.script, d.sats).v1(t), d.ref, nil))
+	assert.Equal(t, 503, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "ERR_BROADCAST_UNAVAILABLE")
+	assert.Zero(t, e.bc.calls)
+	assert.Empty(t, e.inbox(idKey))
+}

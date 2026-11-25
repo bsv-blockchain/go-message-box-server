@@ -126,6 +126,11 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 		// inbox insert for a second payment would leave the record to expire
 		// with the first. Not extended, not broadcast.
 		if err := s.destinations.ExtendDestinationRetention(bctx, dest.Reference, s.clock().Add(storage.P2PDestinationRetention)); err != nil {
+			if bctx.Err() != nil {
+				// The settle deadline ended: a timeout, and nothing is broadcast.
+				logger.Error("p2p extend retention timed out", "error", err)
+				return "", http.StatusServiceUnavailable, newP2PError("ERR_BROADCAST_UNAVAILABLE", "could not broadcast the transaction; safe to retry")
+			}
 			logger.Error("p2p extend retention failed", "error", err)
 			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
 		}
