@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
@@ -77,6 +78,10 @@ func matchOutput(tx *transaction.Transaction, dest *storage.P2PDestination) int 
 	return -1
 }
 
+// p2pSettleTimeout bounds the verify, extend and broadcast phase of a payment.
+// It is a variable so tests can shorten it.
+var p2pSettleTimeout = 45 * time.Second
+
 // settleP2P takes a payment for a destination from the check to the inbox. The
 // order is the safety property: nothing is marked used or delivered until the
 // network has accepted the transaction, and a replay of the same transaction
@@ -105,7 +110,11 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 	// pays the recipient, so it is verified, broadcast (idempotent) and
 	// delivered under its own message id.
 	if dest.UsedTxID != txid {
-		if err := s.p2p.Verifier.Verify(ctx, tx); err != nil {
+		// Verify, extend and broadcast share one deadline, so a slow chain
+		// tracker or broadcaster cannot hold the request open.
+		bctx, cancel := context.WithTimeout(ctx, p2pSettleTimeout)
+		defer cancel()
+		if err := s.p2p.Verifier.Verify(bctx, tx); err != nil {
 			if errors.Is(err, p2p.ErrInvalidProof) {
 				return "", http.StatusBadRequest, newP2PError("ERR_INVALID_PROOF", "transaction or its parents failed SPV verification")
 			}
@@ -116,11 +125,11 @@ func (s *Server) settleP2P(ctx context.Context, dest *storage.P2PDestination, tx
 		// later one alike. Without it a crash between the broadcast and the
 		// inbox insert for a second payment would leave the record to expire
 		// with the first. Not extended, not broadcast.
-		if err := s.destinations.ExtendDestinationRetention(ctx, dest.Reference, s.clock().Add(storage.P2PDestinationRetention)); err != nil {
+		if err := s.destinations.ExtendDestinationRetention(bctx, dest.Reference, s.clock().Add(storage.P2PDestinationRetention)); err != nil {
 			logger.Error("p2p extend retention failed", "error", err)
 			return "", http.StatusInternalServerError, newP2PError("ERR_INTERNAL", "storage failure; safe to retry")
 		}
-		if _, err := s.p2p.Broadcaster.Broadcast(ctx, tx); err != nil {
+		if _, err := s.p2p.Broadcaster.Broadcast(bctx, tx); err != nil {
 			if errors.Is(err, p2p.ErrRejected) {
 				// The broadcaster's description stays in our log: relayed, it
 				// would let a public caller probe its validation internals.

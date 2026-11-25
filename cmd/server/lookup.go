@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
 
@@ -74,6 +75,10 @@ type p2pWiring struct {
 	Parents     p2p.ParentFetcher
 }
 
+// p2pHTTPTimeout bounds each outside request the paymail rail makes, so a
+// hung Arcade or WhatsOnChain cannot hold a payment forever.
+const p2pHTTPTimeout = 20 * time.Second
+
 // newP2PWiring builds the production parts, or (nil, nil) when the rail is
 // off. store is taken as any for the same reason as in lookupRegistry: only the
 // Mongo backend carries a destination store, and a deployment that turned the
@@ -87,10 +92,11 @@ func newP2PWiring(cfg *config.Config, store any) (*p2pWiring, error) {
 	if !ok {
 		return nil, fmt.Errorf("P2P_RECEIVE_ENABLED requires a storage backend with a destination store, %q has none", cfg.StorageBackend)
 	}
+	client := &http.Client{Timeout: p2pHTTPTimeout}
 	return &p2pWiring{
 		Store:       dests,
-		Broadcaster: p2p.NewArcade(cfg.BroadcasterURL, cfg.BroadcasterAPIKey, nil),
-		Verifier:    p2p.NewSPV(chaintracker.NewWhatsOnChain(chaintracker.MainNet, cfg.WOCAPIKey)),
+		Broadcaster: p2p.NewArcade(cfg.BroadcasterURL, cfg.BroadcasterAPIKey, client),
+		Verifier:    p2p.NewSPV(chaintracker.NewWhatsOnChain(chaintracker.MainNet, cfg.WOCAPIKey, chaintracker.WithHTTPClient(client))),
 		Parents:     p2p.NewWhatsOnChain(cfg.WOCAPIKey, nil),
 	}, nil
 }
