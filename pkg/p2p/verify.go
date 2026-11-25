@@ -37,6 +37,12 @@ func NewSPV(tracker chaintracker.ChainTracker) Verifier { return &spvVerifier{tr
 func (v *spvVerifier) Verify(ctx context.Context, tx *transaction.Transaction) error {
 	ok, err := spv.Verify(ctx, tx, v.tracker, nil)
 	if err != nil {
+		// go-sdk wraps a context stop during script execution with
+		// ErrScriptVerificationFailed too. Our budget ran out: not the
+		// sender's fault, so the caller answers 503 and the sender retries.
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return fmt.Errorf("verification stopped: %w", err)
+		}
 		for _, e := range spvErrors {
 			if errors.Is(err, e) {
 				return fmt.Errorf("%w: %w", ErrInvalidProof, err)

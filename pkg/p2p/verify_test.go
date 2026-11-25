@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,4 +43,32 @@ func TestSPVTrackerDownIsNotInvalidProof(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrInvalidProof)
 	require.ErrorIs(t, err, down)
+}
+
+// cancelTracker accepts every root, and cancels the context when asked, so
+// the cancel lands after the merkle check and inside script execution.
+type cancelTracker struct{ cancel context.CancelFunc }
+
+func (c cancelTracker) IsValidRootForHeight(context.Context, *chainhash.Hash, uint32) (bool, error) {
+	c.cancel()
+	return true, nil
+}
+func (cancelTracker) CurrentHeight(context.Context) (uint32, error) { return 900000, nil }
+
+// go-sdk wraps a context stop during script execution with both
+// ErrScriptVerificationFailed and the context error. It is our budget running
+// out, not the sender's fault, so it must not read as an invalid proof.
+func TestSPVContextStopIsNotInvalidProof(t *testing.T) {
+	parent := minedTx(t)
+	child := transaction.NewTransaction()
+	child.AddInputFromTx(parent, 0, nil)
+	child.Inputs[0].UnlockingScript = &script.Script{}
+	child.AddOutput(&transaction.TransactionOutput{Satoshis: 1, LockingScript: &script.Script{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := NewSPV(cancelTracker{cancel: cancel}).Verify(ctx, child)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrInvalidProof)
 }
