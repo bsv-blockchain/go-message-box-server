@@ -445,3 +445,123 @@ func TestLoad_WebSockets(t *testing.T) {
 		t.Setenv(k, "")
 	}
 }
+
+func TestLoad_P2P(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PEnabled() || cfg.P2PDestinationTTL != 24*time.Hour || cfg.P2PMaxSatoshis != 1000000000 || cfg.P2PRatePerMin != 120 {
+		t.Errorf("defaults = %+v", cfg)
+	}
+
+	t.Setenv("P2P_RECEIVE_ENABLED", "true")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "P2P_RECEIVE_ENABLED requires PAYMAIL_DOMAIN") {
+		t.Errorf("missing domain: err = %v", err)
+	}
+
+	t.Setenv("PAYMAIL_DOMAIN", "example.com")
+	t.Setenv("PAYMAIL_HOST", "https://mb.example.com")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "P2P_RECEIVE_ENABLED requires BROADCASTER_URL") {
+		t.Errorf("missing broadcaster: err = %v", err)
+	}
+
+	t.Setenv("BROADCASTER_URL", "http://x")
+	if _, err = Load(); err == nil {
+		t.Error("plain http to a remote host must fail")
+	}
+
+	t.Setenv("BROADCASTER_URL", "http://localhost:3000")
+	if _, err = Load(); err != nil {
+		t.Errorf("http localhost must load: %v", err)
+	}
+
+	t.Setenv("BROADCASTER_URL", "https://broadcast.bsvblockchain.tech/")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BroadcasterURL != "https://broadcast.bsvblockchain.tech" || !cfg.P2PEnabled() {
+		t.Errorf("url = %q enabled = %v", cfg.BroadcasterURL, cfg.P2PEnabled())
+	}
+
+	t.Setenv("P2P_RECEIVE_ENABLED", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PEnabled() {
+		t.Error("P2PEnabled must need P2P_RECEIVE_ENABLED")
+	}
+}
+
+// The verifier and parent fetcher are hard-wired to mainnet, so enabling the
+// rail on another network must fail at startup, not at the first payment.
+func TestLoad_P2PMainnetOnly(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("PAYMAIL_DOMAIN", "example.com")
+	t.Setenv("PAYMAIL_HOST", "https://mb.example.com")
+	t.Setenv("BROADCASTER_URL", "https://broadcast.bsvblockchain.tech")
+	t.Setenv("P2P_RECEIVE_ENABLED", "true")
+
+	for _, n := range []string{"testnet", "ttn", "tstn", "TestNet"} {
+		t.Setenv("BSV_NETWORK", n)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "mainnet only") {
+			t.Errorf("BSV_NETWORK=%s: err = %v, want a mainnet-only refusal", n, err)
+		}
+	}
+	for _, n := range []string{"mainnet", "MAINNET", "main"} {
+		t.Setenv("BSV_NETWORK", n)
+		if _, err := Load(); err != nil {
+			t.Errorf("BSV_NETWORK=%s: %v", n, err)
+		}
+	}
+	// Off, the network is not this rail's business.
+	t.Setenv("BSV_NETWORK", "testnet")
+	t.Setenv("P2P_RECEIVE_ENABLED", "false")
+	if _, err := Load(); err != nil {
+		t.Errorf("rail off on testnet: %v", err)
+	}
+}
+
+func TestLoad_P2PValues(t *testing.T) {
+	t.Setenv("SERVER_PRIVATE_KEY", "01")
+	t.Setenv("P2P_DESTINATION_TTL", "2h")
+	t.Setenv("P2P_MAX_SATOSHIS", "500")
+	t.Setenv("P2P_RATE_PER_MIN", "7")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.P2PDestinationTTL != 2*time.Hour || cfg.P2PMaxSatoshis != 500 || cfg.P2PRatePerMin != 7 {
+		t.Errorf("cfg = %+v", cfg)
+	}
+
+	if cfg.P2PVerifyConcurrency != 4 {
+		t.Errorf("verify concurrency default = %d, want 4", cfg.P2PVerifyConcurrency)
+	}
+	t.Setenv("P2P_VERIFY_CONCURRENCY", "2")
+	if cfg, err = Load(); err != nil || cfg.P2PVerifyConcurrency != 2 {
+		t.Errorf("verify concurrency 2 = %v, %v", cfg, err)
+	}
+	t.Setenv("P2P_VERIFY_CONCURRENCY", "0")
+	if cfg, err = Load(); err != nil || cfg.P2PVerifyConcurrency != 4 {
+		t.Errorf("verify concurrency 0 = %v, %v; want default 4", cfg, err)
+	}
+
+	t.Setenv("P2P_RATE_PER_MIN", "0")
+	if cfg, err = Load(); err != nil || cfg.P2PRatePerMin != 120 {
+		t.Errorf("rate 0 = %v, %v; want default 120", cfg, err)
+	}
+	t.Setenv("P2P_DESTINATION_TTL", "soon")
+	if _, err = Load(); err == nil {
+		t.Error("bad TTL must fail")
+	}
+	t.Setenv("P2P_DESTINATION_TTL", "")
+	t.Setenv("P2P_MAX_SATOSHIS", "0")
+	if _, err = Load(); err == nil {
+		t.Error("zero cap must fail")
+	}
+}

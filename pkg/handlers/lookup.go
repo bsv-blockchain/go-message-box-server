@@ -93,13 +93,18 @@ func availableWithoutHandle(w http.ResponseWriter, _ *http.Request) {
 // @Success 200 {object} map[string]interface{}
 // @Router /.well-known/bsvalias [get]
 func (s *Server) WellKnown(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"bsvalias": "1.0",
-		"capabilities": map[string]string{
-			handles.BRFCLookup:        s.lookup.Host + "/api/handle/{query}",
-			handles.BRFCReverseLookup: s.lookup.Host + "/api/identityKey/{pubkey}",
-		},
-	})
+	caps := map[string]any{
+		handles.BRFCLookup:        s.lookup.Host + "/api/handle/{query}",
+		handles.BRFCReverseLookup: s.lookup.Host + "/api/identityKey/{pubkey}",
+	}
+	// The paymail receive capabilities appear only with the rail on, so a
+	// server without it publishes the document it always did.
+	if s.p2p != nil {
+		for k, v := range s.p2pCapabilities() {
+			caps[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bsvalias": "1.0", "capabilities": caps})
 }
 
 // writeCertificates writes stored certificate JSON verbatim. No matches is an

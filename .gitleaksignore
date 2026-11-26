@@ -15,3 +15,6 @@ pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:18
 pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:102
 # The same keys in the fixture's first, single-line commit.
 6adc98cde76ca4e393d865e5b1053411d61079be:pkg/livesocket/testdata/ts-authmessages.json:generic-api-key:1
+# pkg/p2p/testdata/vector.json is a fixed public test vector. Line 2 is a
+# public key, which the generic-api-key rule mistakes for a credential.
+pkg/p2p/testdata/vector.json:generic-api-key:2

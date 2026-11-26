@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -45,13 +46,25 @@ type Config struct {
 	BSVNetwork       string
 
 	// Paymail profile lookup (optional)
-	PaymailDomain     string
-	PaymailHost       string
-	HandleCooldown    time.Duration
-	AdminIdentityKeys []string
-	LookupRatePerMin  int
-	TrustProxy        bool
-	TrustedProxyHops  int
+	PaymailDomain string
+	PaymailHost   string
+
+	// Paymail P2P receive (optional). On only when P2PEnabled reports true.
+	P2PReceiveEnabled bool
+	BroadcasterURL    string // no trailing slash
+	BroadcasterAPIKey string
+	P2PDestinationTTL time.Duration
+	P2PMaxSatoshis    uint64
+	WOCAPIKey         string
+	PaymailAvatarURL  string
+	P2PRatePerMin     int
+	// P2PVerifyConcurrency caps SPV verifications that run at once.
+	P2PVerifyConcurrency int
+	HandleCooldown       time.Duration
+	AdminIdentityKeys    []string
+	LookupRatePerMin     int
+	TrustProxy           bool
+	TrustedProxyHops     int
 	// ClientIPHeader, when set, names a single-valued header a proxy sets to the
 	// real client address (e.g. "CF-Connecting-IP"); it takes precedence over
 	// TrustProxy/TrustedProxyHops in RateLimiter.clientIP. Only set it once the
@@ -175,6 +188,82 @@ func loadPurchases(cfg *Config) error {
 	return nil
 }
 
+// P2PEnabled reports whether the paymail P2P receive routes are served. All
+// three inputs are needed, so a half-configured deployment leaves the
+// well-known document exactly as it was.
+func (c *Config) P2PEnabled() bool {
+	return c.PaymailDomain != "" && c.P2PReceiveEnabled && c.BroadcasterURL != ""
+}
+
+// loadP2P reads the P2P receive settings. A setting that is present but
+// unusable fails the load, because the alternative is a payment route that
+// quietly cannot broadcast.
+func loadP2P(cfg *Config) error {
+	cfg.P2PReceiveEnabled = strings.EqualFold(strings.TrimSpace(os.Getenv("P2P_RECEIVE_ENABLED")), "true")
+	cfg.BroadcasterURL = strings.TrimRight(strings.TrimSpace(os.Getenv("BROADCASTER_URL")), "/")
+	cfg.BroadcasterAPIKey = strings.TrimSpace(os.Getenv("BROADCASTER_API_KEY"))
+	cfg.WOCAPIKey = strings.TrimSpace(os.Getenv("WOC_API_KEY"))
+	cfg.PaymailAvatarURL = strings.TrimSpace(os.Getenv("PAYMAIL_AVATAR_URL"))
+	// Unlike LOOKUP_RATE_PER_MIN this has no off switch: it is the only
+	// control in front of the payment routes, so zero or a typo keeps the default.
+	cfg.P2PRatePerMin = getEnvInt("P2P_RATE_PER_MIN", 120)
+	if cfg.P2PRatePerMin < 1 {
+		cfg.P2PRatePerMin = 120
+	}
+
+	cfg.P2PVerifyConcurrency = getEnvInt("P2P_VERIFY_CONCURRENCY", 4)
+	if cfg.P2PVerifyConcurrency < 1 {
+		cfg.P2PVerifyConcurrency = 4
+	}
+	cfg.P2PDestinationTTL = 24 * time.Hour
+	if v := strings.TrimSpace(os.Getenv("P2P_DESTINATION_TTL")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("P2P_DESTINATION_TTL %q is not a positive duration such as 24h", v)
+		}
+		cfg.P2PDestinationTTL = d
+	}
+
+	cfg.P2PMaxSatoshis = 1_000_000_000
+	if v := strings.TrimSpace(os.Getenv("P2P_MAX_SATOSHIS")); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || n == 0 {
+			return fmt.Errorf("P2P_MAX_SATOSHIS %q is not a positive integer", v)
+		}
+		cfg.P2PMaxSatoshis = n
+	}
+
+	if cfg.BroadcasterURL != "" {
+		u, err := url.Parse(cfg.BroadcasterURL)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("BROADCASTER_URL %q is not a valid URL", cfg.BroadcasterURL)
+		}
+		// The API key travels in a header, so plain http is for loopback only.
+		host := u.Hostname()
+		local := host == "localhost" || host == "127.0.0.1" || host == "::1"
+		if u.Scheme != "https" && (u.Scheme != "http" || !local) {
+			return fmt.Errorf("BROADCASTER_URL must be https (http only for localhost), got %q", cfg.BroadcasterURL)
+		}
+	}
+	if cfg.P2PReceiveEnabled {
+		if cfg.PaymailDomain == "" {
+			return fmt.Errorf("P2P_RECEIVE_ENABLED requires PAYMAIL_DOMAIN")
+		}
+		if cfg.BroadcasterURL == "" {
+			return fmt.Errorf("P2P_RECEIVE_ENABLED requires BROADCASTER_URL")
+		}
+		// The SPV chain tracker and the parent fetcher are built for mainnet.
+		// On another network every real payment would fail verification while
+		// startup looked healthy, so refuse to start instead.
+		switch strings.ToLower(strings.TrimSpace(cfg.BSVNetwork)) {
+		case "mainnet", "main":
+		default:
+			return fmt.Errorf("P2P_RECEIVE_ENABLED supports mainnet only, BSV_NETWORK is %q", cfg.BSVNetwork)
+		}
+	}
+	return nil
+}
+
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -211,6 +300,9 @@ func Load() (*Config, error) {
 		if cfg.PaymailHost == "" {
 			return nil, fmt.Errorf("PAYMAIL_HOST is required when PAYMAIL_DOMAIN is set")
 		}
+	}
+	if err := loadP2P(cfg); err != nil {
+		return nil, err
 	}
 	cooldownDays := getEnvInt("HANDLE_COOLDOWN_DAYS", 30)
 	if cooldownDays > maxCooldownDays {

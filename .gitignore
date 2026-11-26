@@ -38,6 +38,7 @@ coverage.out
 testdata
 # ...except fixtures that tests read
 !pkg/livesocket/testdata/
+!pkg/p2p/testdata/
 
 # AI Models
 .claude
