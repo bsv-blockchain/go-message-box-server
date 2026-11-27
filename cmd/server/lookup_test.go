@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bsv-blockchain/go-message-box-server/internal/logger"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/config"
 	"github.com/bsv-blockchain/go-message-box-server/pkg/handlers"
 	mbstorage "github.com/bsv-blockchain/go-message-box-server/pkg/storage"
@@ -311,6 +313,30 @@ func TestMountP2P_ServesTheRoutesThroughTheRootMux(t *testing.T) {
 	}
 	if doc.Capabilities["2a40af698840"] == nil {
 		t.Errorf("capabilities = %v, want the p2p destination", doc.Capabilities)
+	}
+}
+
+// The paymail routes, and only they, write the request log: it is how a
+// refused sender shows where it stopped.
+func TestMountPublicRoutes_LogsPaymailRequests(t *testing.T) {
+	var buf bytes.Buffer
+	t.Cleanup(logger.SetOutput(&buf))
+	root := mountP2PRoot(t, p2pTestConfig())
+
+	serve(t, root, "GET", "/.well-known/bsvalias", "")
+	serve(t, root, "POST", "/api/bsvalias/receive-transaction/rosa@example.com", `not json`)
+	serve(t, root, "GET", "/api/handle/rosa", "")
+
+	out := buf.String()
+	if !strings.Contains(out, "path=/.well-known/bsvalias status=200") {
+		t.Errorf("log %q has no capability document record", out)
+	}
+	if !strings.Contains(out, "path=/api/bsvalias/receive-transaction/rosa@example.com status=400") ||
+		!strings.Contains(out, "code=ERR_INVALID_BODY") {
+		t.Errorf("log %q has no refused receive record", out)
+	}
+	if strings.Contains(out, "path=/api/handle/") {
+		t.Errorf("log %q records a handle lookup, which is not a paymail route", out)
 	}
 }
 

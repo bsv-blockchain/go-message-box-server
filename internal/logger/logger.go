@@ -61,6 +61,12 @@ func Warn(msg string, args ...any) {
 	}
 }
 
+// Info always logs, like Error, but at info level. It is for the few records
+// production must keep, such as the paymail request log.
+func Info(msg string, args ...any) {
+	std.Load().Info(msg, args...)
+}
+
 // Error always logs errors.
 func Error(msg string, args ...any) {
 	std.Load().Error(msg, args...)
