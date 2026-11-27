@@ -126,10 +126,11 @@ func mountP2P(cfg *config.Config, srv *handlers.Server, w *p2pWiring) http.Handl
 
 // mountPublicRoutes registers the unauthenticated handlers on the root mux.
 // ServeMux picks the most specific pattern regardless of registration order, so
-// these win over the authenticated catch-all. Any handler may be nil.
+// these win over the authenticated catch-all. Any handler may be nil. The
+// paymail routes log each request (see handlers.PaymailRequestLog).
 func mountPublicRoutes(root *http.ServeMux, public, p2pHandler, storeRoutes http.Handler) {
 	if public != nil {
-		root.Handle("/.well-known/bsvalias", public)
+		root.Handle("/.well-known/bsvalias", handlers.PaymailRequestLog(public))
 		root.Handle("/api/handle", public)
 		root.Handle("/api/handle/", public)
 		root.Handle("/api/identityKey/", public)
@@ -138,6 +139,7 @@ func mountPublicRoutes(root *http.ServeMux, public, p2pHandler, storeRoutes http
 		}
 	}
 	if p2pHandler != nil {
-		root.Handle("/api/bsvalias/", p2pHandler)
+		// The log wraps the limiter, so a 429 is logged too.
+		root.Handle("/api/bsvalias/", handlers.PaymailRequestLog(p2pHandler))
 	}
 }
